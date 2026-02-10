@@ -37,6 +37,12 @@ Binary location:
 
 ## Usage
 
+### Starting the daemon
+
+In your wayland compositors autostart section start gesso daemon with:
+
+```gessod ```
+
 ### Set an image wallpaper
 
     gesso set ~/Pictures/wallpaper.png
