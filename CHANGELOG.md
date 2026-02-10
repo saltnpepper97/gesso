@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project are documented here.
+## 0.1.2
+
+### Fixes
+- `gesso stop` now correctly terminates the daemon.
+- CLI now reports version via `-V`.
 
 ## 0.1.1
 

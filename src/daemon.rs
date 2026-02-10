@@ -126,7 +126,7 @@ pub fn run_daemon() -> Result<()> {
                 );
             }
 
-            let mut shutdown = false;
+            let shutdown = false;
 
             for conn in listener.incoming() {
                 if shutdown {
