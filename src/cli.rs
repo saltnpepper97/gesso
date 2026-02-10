@@ -4,7 +4,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser, Debug)]
-#[command(name = "gesso", about = "Deterministic Wayland wallpaper daemon and CLI")]
+#[command(name = "gesso", about = "Deterministic Wayland wallpaper daemon and CLI", version)]
 pub struct Cli {
     #[command(subcommand)]
     pub cmd: Command,
@@ -27,7 +27,7 @@ pub enum Command {
         transition: TransitionArg,
 
         /// Transition duration in ms
-        #[arg(long, short = 'd', default_value_t = 550)]
+        #[arg(long, short = 'd', default_value_t = 850)]
         duration: u32,
 
         /// Optional output name (later; accepted now for forward-compat)

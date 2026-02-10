@@ -115,15 +115,10 @@ pub fn run_daemon() -> Result<()> {
                     {
                         eventline::info!("restoring cached spec={:?}", spec);
 
-                        if let Err(e) =
-                            apply_with_retry(&mut engine, spec.clone(), &p.current_path)
+                        if let Err(e) = apply_with_retry(&mut engine, spec.clone(), &p.current_path)
                         {
                             // Log and continue serving clients.
-                            eventline::error!(
-                                "cached apply failed spec={:?} err={:#}",
-                                spec,
-                                e
-                            );
+                            eventline::error!("cached apply failed spec={:?} err={:#}", spec, e);
                         }
 
                         Ok::<(), anyhow::Error>(())
@@ -131,7 +126,13 @@ pub fn run_daemon() -> Result<()> {
                 );
             }
 
+            let mut shutdown = false;
+
             for conn in listener.incoming() {
+                if shutdown {
+                    break;
+                }
+
                 match conn {
                     Ok(mut stream) => {
                         let peer = stream
@@ -150,27 +151,35 @@ pub fn run_daemon() -> Result<()> {
                         let _ = stream.set_read_timeout(Some(Duration::from_secs(120)));
                         let _ = stream.set_write_timeout(Some(Duration::from_secs(120)));
 
-                        let res: Result<()> = eventline::scope!(
+                        let res: Result<bool> = eventline::scope!(
                             "gesso.daemon.client",
                             success = "done",
                             failure = "error",
                             aborted = "aborted",
                             {
                                 eventline::debug!("client connected peer={}", peer);
-                                handle_client(&mut stream, &p.current_path, &mut engine)?;
-                                Ok::<(), anyhow::Error>(())
+                                let should_exit =
+                                    handle_client(&mut stream, &p.current_path, &mut engine)?;
+                                Ok::<bool, anyhow::Error>(should_exit)
                             }
                         );
 
-                        if let Err(e) = res {
-                            if is_client_disconnect(&e) {
-                                eventline::warn!(
-                                    "client disconnected peer={} err={}",
-                                    peer,
-                                    root_io_msg(&e)
-                                );
-                            } else {
-                                eventline::error!("client error peer={} err={:#}", peer, e);
+                        match res {
+                            Ok(true) => {
+                                eventline::info!("shutdown requested; exiting daemon loop");
+                                break;
+                            }
+                            Ok(false) => {}
+                            Err(e) => {
+                                if is_client_disconnect(&e) {
+                                    eventline::warn!(
+                                        "client disconnected peer={} err={}",
+                                        peer,
+                                        root_io_msg(&e)
+                                    );
+                                } else {
+                                    eventline::error!("client error peer={} err={:#}", peer, e);
+                                }
                             }
                         }
                     }
@@ -180,6 +189,10 @@ pub fn run_daemon() -> Result<()> {
                 }
             }
 
+            // Best effort: remove socket on exit.
+            let _ = fs::remove_file(&p.sock_path);
+            eventline::info!("daemon exiting");
+
             Ok::<(), anyhow::Error>(())
         }
     )?;
@@ -187,7 +200,7 @@ pub fn run_daemon() -> Result<()> {
     Ok(())
 }
 
-fn handle_client(stream: &mut UnixStream, current_path: &Path, engine: &mut Engine) -> Result<()> {
+fn handle_client(stream: &mut UnixStream, current_path: &Path, engine: &mut Engine) -> Result<bool> {
     // Read exactly one JSON line request, then drop the reader before writing.
     let req: Request = {
         let mut line = String::new();
@@ -198,12 +211,12 @@ fn handle_client(stream: &mut UnixStream, current_path: &Path, engine: &mut Engi
 
         // EOF: client connected but sent nothing (or closed immediately). Not an error.
         if n == 0 {
-            return Ok(());
+            return Ok(false);
         }
 
         let trimmed = line.trim();
         if trimmed.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
 
         serde_json::from_str(trimmed).context("parse request json")?
@@ -270,13 +283,19 @@ fn handle_client(stream: &mut UnixStream, current_path: &Path, engine: &mut Engi
                 aborted = "aborted",
                 {
                     eventline::info!("stop request");
-                    engine.stop()?;
+
+                    // Best effort: stop wallpaper + clear state.
+                    let _ = engine.stop();
                     clear_current(current_path);
-                    eventline::info!("state cleared");
+
+                    // Reply first so client doesn't see connection reset.
                     write_resp(stream, Response::Ok)?;
+
                     Ok::<(), anyhow::Error>(())
                 }
             )?;
+
+            return Ok(true);
         }
 
         Request::Status => {
@@ -345,7 +364,7 @@ fn handle_client(stream: &mut UnixStream, current_path: &Path, engine: &mut Engi
         }
     }
 
-    Ok(())
+    Ok(false)
 }
 
 fn build_engine() -> Result<Engine> {
