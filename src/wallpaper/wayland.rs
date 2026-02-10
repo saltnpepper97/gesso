@@ -18,6 +18,7 @@ use wayland_client::{
         wl_callback::{self, WlCallback},
         wl_compositor::WlCompositor,
         wl_output::{self, WlOutput},
+        wl_region::WlRegion,
         wl_registry,
         wl_shm::{self, WlShm},
         wl_shm_pool::WlShmPool,
@@ -717,6 +718,12 @@ fn create_layer_surface(
     out: &WlOutput,
 ) -> Result<(WlSurface, ZwlrLayerSurfaceV1)> {
     let surface = compositor.create_surface(qh, ());
+
+    // Default input region is the full surface; that steals pointer clicks from the compositor/root.
+    let empty_region = compositor.create_region(qh, ());
+    surface.set_input_region(Some(&empty_region));
+    // drop(empty_region) is fine; Wayland keeps the object alive as needed.
+
     let layer = layer_shell.get_layer_surface(
         &surface,
         Some(out),
@@ -728,7 +735,11 @@ fn create_layer_surface(
 
     layer.set_anchor(Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right);
     layer.set_size(0, 0);
-    layer.set_exclusive_zone(-1);
+
+    // For wallpapers you typically want 0 (don’t reserve space).
+    // -1 can be interpreted as "exclusive sized to surface" in some compositors and can be weird.
+    layer.set_exclusive_zone(0);
+
     layer.set_keyboard_interactivity(KeyboardInteractivity::None);
 
     surface.commit();
@@ -1139,3 +1150,4 @@ wayland_client::delegate_noop!(Engine: ignore WlShm);
 wayland_client::delegate_noop!(Engine: ignore ZwlrLayerShellV1);
 wayland_client::delegate_noop!(Engine: ignore WlSurface);
 wayland_client::delegate_noop!(Engine: ignore WlShmPool);
+wayland_client::delegate_noop!(Engine: ignore WlRegion);

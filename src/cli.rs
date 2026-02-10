@@ -51,7 +51,6 @@ pub enum Command {
     },
 
     /// Unset wallpaper on one output (by name) or all outputs (default).
-    /// If `--output` is omitted, unsets all.
     Unset {
         /// Output name to unset (if omitted, unsets all)
         #[arg(long, short = 'o')]
