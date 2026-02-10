@@ -37,7 +37,7 @@ Binary location:
 
 ## Usage
 
-### Starting the daemon
+### Start the daemon
 
 In your wayland compositors autostart section start gesso daemon with:
 
