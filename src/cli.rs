@@ -43,7 +43,7 @@ pub enum Command {
         transition: TransitionArg,
 
         /// Transition duration in ms
-        #[arg(long, short = 'd', default_value_t = 200)]
+        #[arg(long, short = 'd', default_value_t = 850)]
         duration: u32,
 
         #[arg(long, short = 'o')]

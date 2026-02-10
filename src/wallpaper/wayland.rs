@@ -727,7 +727,7 @@ fn create_layer_surface(
     let layer = layer_shell.get_layer_surface(
         &surface,
         Some(out),
-        Layer::Background,
+        Layer::Bottom,  // Changed from Background to Bottom - better for wallpapers
         "gesso".into(),
         qh,
         (),
@@ -736,9 +736,9 @@ fn create_layer_surface(
     layer.set_anchor(Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right);
     layer.set_size(0, 0);
 
-    // For wallpapers you typically want 0 (don’t reserve space).
-    // -1 can be interpreted as "exclusive sized to surface" in some compositors and can be weird.
-    layer.set_exclusive_zone(0);
+    // -1 means "ignore other surfaces' exclusive zones, give me the full output"
+    // This ensures the wallpaper covers the entire screen, even behind bars/panels
+    layer.set_exclusive_zone(-1);
 
     layer.set_keyboard_interactivity(KeyboardInteractivity::None);
 

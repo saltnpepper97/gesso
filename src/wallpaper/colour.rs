@@ -173,7 +173,7 @@ pub fn transition_to_on(
     output: Option<&str>,
 ) -> Result<()> {
     let out = output.unwrap_or("(all)");
-    let duration_ms = duration_ms.max(1);
+    let duration_ms = duration_ms.max(16);
     let duration = Duration::from_millis(duration_ms as u64);
     let frame_dt = Duration::from_secs_f32(1.0 / TARGET_FPS);
 
