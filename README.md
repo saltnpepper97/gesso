@@ -181,4 +181,3 @@ Example:
 - graceful degradation when compositors misbehave
 
 Silence is a feature.
-# gesso
