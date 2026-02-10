@@ -1,0 +1,159 @@
+.TH GESSO 1 "Wayland" "gesso" "User Commands"
+.SH NAME
+gesso \- deterministic Wayland wallpaper controller
+
+.SH SYNOPSIS
+.B gesso
+.RI <command> " [options]"
+
+.SH DESCRIPTION
+.B gesso
+is a deterministic Wayland wallpaper controller and daemon designed for
+smooth, low-latency transitions and predictable behavior.
+
+It uses the wlr-layer-shell protocol to render wallpapers on a dedicated
+background layer per output. gesso supports image and solid-colour wallpapers
+with optional fade and wipe transitions.
+
+Unlike compositor-driven wallpaper tools, gesso explicitly controls timing,
+buffering, and pacing to avoid stalls, runaway animations, or deadlocks.
+
+Wayland-only. Requires a compositor that supports wlr-layer-shell.
+
+.SH COMMANDS
+
+.TP
+.B set
+Set an image wallpaper.
+
+.TP
+.B colour
+Set a solid colour wallpaper.
+
+.TP
+.B unset
+Unset the wallpaper on one output or all outputs.
+
+.TP
+.B status
+Show current wallpaper state.
+
+.TP
+.B doctor
+Run environment and compositor diagnostics.
+
+.TP
+.B stop
+Stop the wallpaper daemon.
+
+.SH IMAGE COMMAND
+
+.B gesso set
+.I target
+.RI [ options ]
+
+Set an image wallpaper. The target may be a path or a name resolved via
+GESSO_DIRS.
+
+.TP
+.BR \-m ", " \-\-mode " <fill|fit|stretch|center|tile>"
+Image scaling mode. Default is
+.BR fill .
+
+.TP
+.BR \-c ", " \-\-colour " <hex>"
+Background fill colour used for letterboxing with
+.B fit
+or
+.B center
+modes.
+
+.TP
+.BR \-t ", " \-\-transition " <none|fade|wipe>"
+Transition type. Default is
+.BR none .
+
+.TP
+.BR \-d ", " \-\-duration " <milliseconds>"
+Duration of the transition in milliseconds.
+
+This value controls how long the transition animation runs, not how many
+frames are rendered. gesso dynamically paces frames to maintain smoothness
+under compositor load.
+
+Typical values:
+.RS
+- 150–250 ms: subtle, fast transitions
+- 300–600 ms: smooth, noticeable transitions
+- 700+ ms: slow, cinematic transitions
+.RE
+
+Default for image transitions is 550 ms.
+
+.TP
+.BR \-o ", " \-\-output " <name>"
+Target a specific output by
+.B wl_output.name
+(e.g. DP-1, HDMI-A-1).
+
+.SH COLOUR COMMAND
+
+.B gesso colour
+.I colour
+.RI [ options ]
+
+Set a solid colour wallpaper.
+
+.TP
+.BR \-t ", " \-\-transition " <none|fade|wipe>"
+Transition type.
+
+.TP
+.BR \-d ", " \-\-duration " <milliseconds>"
+Transition duration. Default is 200 ms.
+
+.TP
+.BR \-o ", " \-\-output " <name>"
+Target a specific output.
+
+.SH UNSET COMMAND
+
+.B gesso unset
+.RI [ \-\-output " <name>" ]
+
+Unset the wallpaper. If no output is specified, all outputs are unset.
+
+.SH ENVIRONMENT
+
+.TP
+.B WAYLAND_DISPLAY
+Must be set. gesso is Wayland-only.
+
+.TP
+.B GESSO_DIRS
+Colon-separated list of directories used to resolve image targets that
+are not absolute or relative paths.
+
+Example:
+.RS
+export GESSO_DIRS="$HOME/Pictures/Wallpapers:/usr/share/backgrounds"
+.RE
+
+.SH DESIGN NOTES
+
+gesso prioritizes determinism over compositor heuristics.
+
+If frame callbacks stall or a compositor misbehaves, gesso disables pacing
+and continues rendering instead of freezing.
+
+Silence is a feature. Failure modes are explicit.
+
+.SH SEE ALSO
+.BR wayland (7),
+.BR wlroots (7)
+
+.SH AUTHOR
+Dustin Pilgrim
+
+.SH LICENSE
+MIT

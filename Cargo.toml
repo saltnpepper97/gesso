@@ -1,0 +1,20 @@
+[package]
+name = "gesso"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+dirs = "6.0.0"
+eventline = "0.6.1"
+image = { version = "0.25.9", default-features = false, features = ["png", "jpeg"] }
+libc = "0.2.181"
+memmap2 = "0.9.9"
+tempfile = "3.24.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.49.0", features = ["rt", "rt-multi-thread", "macros", "time"] }
+wayland-client = "0.31.12"
+wayland-protocols = "0.32.10"
+wayland-protocols-wlr = { version = "0.3.10", features = ["client"] }
