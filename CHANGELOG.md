@@ -8,7 +8,9 @@ All notable changes to this project are documented here.
 
 - Added documentation to man page for `-f/--from`
 - Added documentation to man page for `-V/--version`
-- Added doc comments so clap prints them in `gesso set -h` / `gesso colour -h`.
+- Added documentation comments so clap prints them in `gesso set -h` / `gesso colour -h`.
+- Fixed documentation in README.md surounding `--duration` (was `--duration-ms`)
+- Added documentation in README.md for `-f/--from`
 
 ## 0.2.0
 
