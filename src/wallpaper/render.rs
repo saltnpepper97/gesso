@@ -4,7 +4,6 @@
 use image::{imageops::FilterType, RgbaImage};
 
 use crate::spec::{Mode, Rgb};
-use crate::wallpaper::util::xrgb8888;
 
 /// Render an RGBA source into an XRGB8888 framebuffer (Vec<u32>) sized (dw, dh),
 /// using the requested Mode and background colour for alpha compositing.
@@ -15,7 +14,7 @@ pub(crate) fn render_final_frame_u32(
     mode: Mode,
     bg: Rgb,
 ) -> Vec<u32> {
-    let bg_px = xrgb8888(bg);
+    let bg_px = bg.xrgb8888();
     let mut out = vec![bg_px; dw * dh];
 
     match mode {

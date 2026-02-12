@@ -11,9 +11,8 @@ use std::time::{Duration, Instant};
 
 use crate::spec::{Mode, Rgb, Spec, Transition, WipeFrom};
 use crate::wallpaper::{
-    paint::paint_blend_frame_to_frame_fast,
+    paint::{ease_out_cubic, paint_blend_frame_to_frame_fast},
     render::render_final_frame_u32,
-    util::{ease_out_cubic, xrgb8888},
     wayland::{self, Engine, SurfaceState},
 };
 
@@ -383,7 +382,7 @@ fn capture_from_frames(engine: &Engine, sel: &[usize]) -> Vec<Option<Arc<[u32]>>
         if let Some(f) = s.last_frame.as_ref() {
             from_frames[si] = Some(Arc::clone(f));
         } else {
-            let px = xrgb8888(s.last_colour);
+            let px = s.last_colour.xrgb8888();
             let w = s.width as usize;
             let h = s.height as usize;
             from_frames[si] = Some(vec![px; w * h].into());

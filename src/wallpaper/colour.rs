@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use crate::spec::{Rgb, Transition, WipeFrom};
 use crate::wallpaper::{
     paint::{paint_blend_frame_to_solid_fast, paint_wipe_frame_to_solid_fast},
-    util::{ease_out_cubic, xrgb8888},
+    paint::ease_out_cubic,
     wayland::{self, Engine},
 };
 
@@ -107,7 +107,7 @@ pub fn apply_solid_on(engine: &mut Engine, target: Rgb, output: Option<&str>) ->
                     continue;
                 }
 
-                let px = xrgb8888(target);
+                let px = target.xrgb8888();
                 let frame: Arc<[u32]> = vec![px; w * h].into();
 
                 {
@@ -229,7 +229,7 @@ pub fn transition_to_on(
                 if let Some(f) = s.last_frame.as_ref() {
                     from_frames[i] = Some(Arc::clone(f));
                 } else {
-                    let px = xrgb8888(s.last_colour);
+                    let px = s.last_colour.xrgb8888();
                     from_frames[i] = Some(vec![px; (s.width * s.height) as usize].into());
                 }
             }
@@ -240,7 +240,7 @@ pub fn transition_to_on(
             }
 
             // No-op detection WITHOUT allocating "to frames".
-            let to_px = xrgb8888(target);
+            let to_px = target.xrgb8888();
             let mut needs = false;
 
             for i in 0..engine.surfaces.len() {
@@ -259,7 +259,7 @@ pub fn transition_to_on(
                     }
                 } else {
                     let s = &engine.surfaces[i];
-                    if xrgb8888(s.last_colour) != to_px {
+                    if s.last_colour.xrgb8888() != to_px {
                         needs = true;
                         break;
                     }

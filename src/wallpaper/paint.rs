@@ -182,3 +182,9 @@ fn lerp_xrgb_u8_fast(a: u32, b: u32, t: u32, inv: u32) -> u32 {
 
     rb | g
 }
+
+#[inline]
+pub(crate) fn ease_out_cubic(t: f32) -> f32 {
+    let t = t - 1.0;
+    t * t * t + 1.0
+}
