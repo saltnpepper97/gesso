@@ -11,6 +11,9 @@ All notable changes to this project are documented here.
 - Added documentation comments so clap prints them in `gesso set -h` / `gesso colour -h`.
 - Fixed documentation in README.md surounding `--duration` (was `--duration-ms`)
 - Added documentation in README.md for `-f/--from`
+- Move xrgb8888 into Rgb as Rgb::xrgb8888()
+- Keep ease_out_cubic local to animation code
+- Update all call sites accordingly
 
 ## 0.2.0
 
