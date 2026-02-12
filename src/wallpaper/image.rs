@@ -77,14 +77,14 @@ pub fn apply_image(engine: &mut Engine, spec: &Spec) -> Result<()> {
                 el::debug!("ensured_buffers count={count}", count = buffer_count);
             }
 
-            // ---- IMPORTANT FIX ----
-            // Do NOT "validate cache" by loading frames and then load them again.
             // Load cached frames ONCE, decide validity, and reuse them.
             let mut cached_frames: Vec<Option<Arc<[u32]>>> = vec![None; engine.surfaces.len()];
             let mut cache_any = false;
             let mut cache_all = true;
 
-            if crate::wallpaper::cache::cached_image_matches(spec).unwrap_or(false) {
+            let entry_id = crate::wallpaper::cache::find_cached_entry_id(spec).unwrap_or(None);
+
+            if let Some(entry_id) = entry_id {
                 for (si, s) in engine.surfaces.iter().enumerate() {
                     if !s.configured || s.width == 0 || s.height == 0 {
                         continue;
@@ -95,7 +95,7 @@ pub fn apply_image(engine: &mut Engine, spec: &Spec) -> Result<()> {
 
                     cache_any = true;
 
-                    match crate::wallpaper::cache::load_last_frame(si, s.width, s.height)? {
+                    match crate::wallpaper::cache::load_frame(entry_id, si, s.width, s.height)? {
                         Some(frame) => cached_frames[si] = Some(frame),
                         None => {
                             cache_all = false;
@@ -124,23 +124,38 @@ pub fn apply_image(engine: &mut Engine, spec: &Spec) -> Result<()> {
                     h = src.height()
                 );
 
+                // Reserve/refresh a cache entry id once for this apply.
+                let cache_entry_id = crate::wallpaper::cache::record_cached_image(spec)?;
+
                 match transition.kind {
                     Transition::None => {
                         el::debug!("applying immediate");
-                        apply_image_immediate(engine, &src, mode, bg, output)?;
+                        apply_image_immediate(engine, &src, mode, bg, output, cache_entry_id)?;
                     }
                     Transition::Fade => {
                         el::debug!("applying fade duration={ms}", ms = transition.duration);
-                        fade_image(engine, &src, mode, bg, transition.duration, output)?;
+                        fade_image(
+                            engine,
+                            &src,
+                            mode,
+                            bg,
+                            transition.duration,
+                            output,
+                            cache_entry_id,
+                        )?;
                     }
                     Transition::Wipe => {
                         el::debug!("applying wipe duration={ms}", ms = transition.duration);
-                        wipe_image(engine, &src, mode, bg, transition.duration, output)?;
+                        wipe_image(
+                            engine,
+                            &src,
+                            mode,
+                            bg,
+                            transition.duration,
+                            output,
+                            cache_entry_id,
+                        )?;
                     }
-                }
-
-                if let Ok(key) = crate::wallpaper::cache::compute_image_key(spec) {
-                    let _ = crate::wallpaper::cache::write_last_image_key(&key);
                 }
             }
 
@@ -207,17 +222,12 @@ fn apply_cached_frames(
                         engine.dispatch_pending()?;
                     }
                 }
-                Transition::Fade => {
-                    fade_to_cached(engine, cached_frames, bg, transition.duration, output)?
-                }
-                Transition::Wipe => {
-                    wipe_to_cached(engine, cached_frames, bg, transition.duration, output)?
-                }
+                Transition::Fade => fade_to_cached(engine, cached_frames, bg, transition.duration, output)?,
+                Transition::Wipe => wipe_to_cached(engine, cached_frames, bg, transition.duration, output)?,
             }
 
-            if let Ok(key) = crate::wallpaper::cache::compute_image_key(spec) {
-                let _ = crate::wallpaper::cache::write_last_image_key(&key);
-            }
+            // Refresh MRU order for this image when we successfully reuse cached frames.
+            let _ = crate::wallpaper::cache::record_cached_image(spec);
 
             Ok::<(), anyhow::Error>(())
         }
@@ -279,7 +289,11 @@ fn fade_to_cached(
             let duration = Duration::from_millis(duration as u64);
             let frame_dt = Duration::from_secs_f32(1.0 / TARGET_FPS);
 
-            el::info!("duration={ms} target_fps={fps}", ms = duration.as_millis() as i64, fps = TARGET_FPS);
+            el::info!(
+                "duration={ms} target_fps={fps}",
+                ms = duration.as_millis() as i64,
+                fps = TARGET_FPS
+            );
 
             let mut from_frames: Vec<Option<Arc<[u32]>>> = vec![None; engine.surfaces.len()];
             let mut any = false;
@@ -369,7 +383,11 @@ fn fade_to_cached(
             engine.dispatch_pending()?;
 
             let elapsed = start.elapsed();
-            el::info!("frames={frames} elapsed_ms={ms}", frames = frames, ms = elapsed.as_millis());
+            el::info!(
+                "frames={frames} elapsed_ms={ms}",
+                frames = frames,
+                ms = elapsed.as_millis()
+            );
 
             Ok::<(), anyhow::Error>(())
         }
@@ -383,6 +401,7 @@ fn fade_image(
     bg: Rgb,
     duration: u32,
     output: Option<&str>,
+    cache_entry_id: u64,
 ) -> Result<()> {
     el::scope!(
         "gesso.image.fade",
@@ -508,7 +527,7 @@ fn fade_image(
                     let s2 = &engine.surfaces[si];
                     (s2.width, s2.height)
                 };
-                let _ = crate::wallpaper::cache::store_last_frame(si, sw, sh, finalf);
+                let _ = crate::wallpaper::cache::store_frame(cache_entry_id, si, sw, sh, finalf);
 
                 any_final = true;
             }
@@ -521,7 +540,11 @@ fn fade_image(
             engine.dispatch_pending()?;
 
             let elapsed = start.elapsed();
-            el::info!("frames={frames} elapsed_ms={ms}", frames = frames, ms = elapsed.as_millis());
+            el::info!(
+                "frames={frames} elapsed_ms={ms}",
+                frames = frames,
+                ms = elapsed.as_millis()
+            );
 
             Ok::<(), anyhow::Error>(())
         }
@@ -583,7 +606,11 @@ fn wipe_to_cached(
             let duration = Duration::from_millis(duration as u64);
             let frame_dt = Duration::from_secs_f32(1.0 / TARGET_FPS);
 
-            el::info!("duration={ms} target_fps={fps}", ms = duration.as_millis() as i64, fps = TARGET_FPS);
+            el::info!(
+                "duration={ms} target_fps={fps}",
+                ms = duration.as_millis() as i64,
+                fps = TARGET_FPS
+            );
 
             let mut from_frames: Vec<Option<Arc<[u32]>>> = vec![None; engine.surfaces.len()];
             let mut any = false;
@@ -672,7 +699,11 @@ fn wipe_to_cached(
             engine.dispatch_pending()?;
 
             let elapsed = start.elapsed();
-            el::info!("frames={frames} elapsed_ms={ms}", frames = frames, ms = elapsed.as_millis());
+            el::info!(
+                "frames={frames} elapsed_ms={ms}",
+                frames = frames,
+                ms = elapsed.as_millis()
+            );
 
             Ok::<(), anyhow::Error>(())
         }
@@ -686,6 +717,7 @@ fn wipe_image(
     bg: Rgb,
     duration: u32,
     output: Option<&str>,
+    cache_entry_id: u64,
 ) -> Result<()> {
     el::scope!(
         "gesso.image.wipe",
@@ -811,7 +843,7 @@ fn wipe_image(
                     let s2 = &engine.surfaces[si];
                     (s2.width, s2.height)
                 };
-                let _ = crate::wallpaper::cache::store_last_frame(si, sw, sh, finalf);
+                let _ = crate::wallpaper::cache::store_frame(cache_entry_id, si, sw, sh, finalf);
 
                 any_final = true;
             }
@@ -824,7 +856,11 @@ fn wipe_image(
             engine.dispatch_pending()?;
 
             let elapsed = start.elapsed();
-            el::info!("frames={frames} elapsed_ms={ms}", frames = frames, ms = elapsed.as_millis());
+            el::info!(
+                "frames={frames} elapsed_ms={ms}",
+                frames = frames,
+                ms = elapsed.as_millis()
+            );
 
             Ok::<(), anyhow::Error>(())
         }
@@ -839,6 +875,7 @@ fn apply_image_immediate(
     mode: Mode,
     bg: Rgb,
     output: Option<&str>,
+    cache_entry_id: u64,
 ) -> Result<()> {
     el::scope!(
         "gesso.image.immediate",
@@ -892,7 +929,7 @@ fn apply_image_immediate(
                     let s = &engine.surfaces[si];
                     (s.width, s.height)
                 };
-                let _ = crate::wallpaper::cache::store_last_frame(si, sw, sh, &frame);
+                let _ = crate::wallpaper::cache::store_frame(cache_entry_id, si, sw, sh, &frame);
 
                 any = true;
             }
@@ -920,7 +957,8 @@ fn load_rgba(path: &Path) -> Result<RgbaImage> {
         {
             el::debug!("loading path={path}", path = path.display().to_string());
 
-            let img = image::open(path).with_context(|| format!("decode image: {}", path.display()))?;
+            let img = image::open(path)
+                .with_context(|| format!("decode image: {}", path.display()))?;
             let rgba = img.to_rgba8();
 
             el::info!("loaded dimensions={w}x{h}", w = rgba.width(), h = rgba.height());
