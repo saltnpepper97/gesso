@@ -105,6 +105,21 @@ pub fn run_daemon() -> Result<()> {
                 }
             )?;
 
+            // Warm up Wayland: configure layer surfaces, allocate SHM buffers,
+            // and fault-in mmap pages so the first real animation isn't choppy.            
+            let _ = eventline::scope!(
+                "gesso.wayland.warmup",
+                success = "ready",
+                failure = "skipped",
+                aborted = "aborted",
+                {
+                    if let Err(e) = engine.warmup() {
+                        eventline::warn!("warmup failed err={:#}", e);
+                    }
+                    Ok::<(), anyhow::Error>(())
+                }
+            );
+
             // Try to restore cached wallpaper
             if let Some(spec) = load_current(&p.current_path) {
                 let _ = eventline::scope!(
@@ -380,12 +395,12 @@ fn build_engine() -> Result<Engine> {
         pr.outputs
     );
 
-    // Give compositor time to send globals/outputs
-    for i in 0..5 {
+    // Do a couple roundtrips to pick up initial globals/output metadata,
+    // but DO NOT add fixed sleeps here (wait_for_configured handles readiness).
+    for i in 0..2 {
         if let Err(e) = engine.roundtrip() {
             eventline::warn!("initial roundtrip failed attempt={} err={:#}", i, e);
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
     Ok(engine)

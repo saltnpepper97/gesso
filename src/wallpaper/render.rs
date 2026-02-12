@@ -8,43 +8,56 @@ use crate::wallpaper::util::xrgb8888;
 
 /// Render an RGBA source into an XRGB8888 framebuffer (Vec<u32>) sized (dw, dh),
 /// using the requested Mode and background colour for alpha compositing.
-pub(crate) fn render_final_frame_u32(dw: usize, dh: usize, src: &RgbaImage, mode: Mode, bg: Rgb) -> Vec<u32> {
+pub(crate) fn render_final_frame_u32(
+    dw: usize,
+    dh: usize,
+    src: &RgbaImage,
+    mode: Mode,
+    bg: Rgb,
+) -> Vec<u32> {
     let bg_px = xrgb8888(bg);
     let mut out = vec![bg_px; dw * dh];
 
     match mode {
         Mode::Stretch => {
             let resized = image::imageops::resize(src, dw as u32, dh as u32, FilterType::Triangle);
-            blit_rgba_into_xrgb(&mut out, dw, dh, &resized, 0, 0, bg);
+            blit_rgba_into_xrgb(&mut out, dw, dh, &resized, 0, 0, bg, bg_px);
         }
         Mode::Fit => {
             let (rw, rh, ox, oy) = fit_rect(src.width(), src.height(), dw as u32, dh as u32);
             let resized = image::imageops::resize(src, rw, rh, FilterType::Triangle);
-            blit_rgba_into_xrgb(&mut out, dw, dh, &resized, ox as i32, oy as i32, bg);
+            blit_rgba_into_xrgb(&mut out, dw, dh, &resized, ox as i32, oy as i32, bg, bg_px);
         }
         Mode::Fill => {
             let (rw, rh) = fill_size(src.width(), src.height(), dw as u32, dh as u32);
             let resized = image::imageops::resize(src, rw, rh, FilterType::Triangle);
             let cx = ((rw as i32 - dw as i32) / 2).max(0) as u32;
             let cy = ((rh as i32 - dh as i32) / 2).max(0) as u32;
-            blit_rgba_crop_into_xrgb(&mut out, dw, dh, &resized, cx, cy, bg);
+            blit_rgba_crop_into_xrgb(&mut out, dw, dh, &resized, cx, cy, bg, bg_px);
         }
         Mode::Center => {
             let sw = src.width() as i32;
             let sh = src.height() as i32;
-            let dw_i = dw as i32;
-            let dh_i = dh as i32;
-            let ox = (dw_i - sw) / 2;
-            let oy = (dh_i - sh) / 2;
-            blit_rgba_into_xrgb(&mut out, dw, dh, src, ox, oy, bg);
+            let ox = (dw as i32 - sw) / 2;
+            let oy = (dh as i32 - sh) / 2;
+            blit_rgba_into_xrgb(&mut out, dw, dh, src, ox, oy, bg, bg_px);
         }
-        Mode::Tile => tile_rgba_into_xrgb(&mut out, dw, dh, src, bg),
+        Mode::Tile => tile_rgba_into_xrgb(&mut out, dw, dh, src, bg, bg_px),
     }
 
     out
 }
 
-fn blit_rgba_into_xrgb(out: &mut [u32], out_w: usize, out_h: usize, src: &RgbaImage, ox: i32, oy: i32, bg: Rgb) {
+fn blit_rgba_into_xrgb(
+    out: &mut [u32],
+    out_w: usize,
+    out_h: usize,
+    src: &RgbaImage,
+    ox: i32,
+    oy: i32,
+    bg: Rgb,
+    bg_px: u32,
+) {
     let sw = src.width() as i32;
     let sh = src.height() as i32;
 
@@ -60,15 +73,25 @@ fn blit_rgba_into_xrgb(out: &mut [u32], out_w: usize, out_h: usize, src: &RgbaIm
     for y in y0..y1 {
         let sy = (y - oy) as u32;
         let row = (y as usize) * out_w;
+
         for x in x0..x1 {
             let sx = (x - ox) as u32;
             let px = src.get_pixel(sx, sy).0;
-            out[row + x as usize] = composite_rgba_over_bg(px, bg);
+            out[row + x as usize] = composite_rgba_over_bg(px, bg, bg_px);
         }
     }
 }
 
-fn blit_rgba_crop_into_xrgb(out: &mut [u32], out_w: usize, out_h: usize, src: &RgbaImage, crop_x: u32, crop_y: u32, bg: Rgb) {
+fn blit_rgba_crop_into_xrgb(
+    out: &mut [u32],
+    out_w: usize,
+    out_h: usize,
+    src: &RgbaImage,
+    crop_x: u32,
+    crop_y: u32,
+    bg: Rgb,
+    bg_px: u32,
+) {
     let sw = src.width();
     let sh = src.height();
 
@@ -77,19 +100,28 @@ fn blit_rgba_crop_into_xrgb(out: &mut [u32], out_w: usize, out_h: usize, src: &R
         if sy >= sh {
             break;
         }
+
         let row = y * out_w;
         for x in 0..out_w {
             let sx = crop_x.saturating_add(x as u32);
             if sx >= sw {
                 break;
             }
+
             let px = src.get_pixel(sx, sy).0;
-            out[row + x] = composite_rgba_over_bg(px, bg);
+            out[row + x] = composite_rgba_over_bg(px, bg, bg_px);
         }
     }
 }
 
-fn tile_rgba_into_xrgb(out: &mut [u32], out_w: usize, out_h: usize, src: &RgbaImage, bg: Rgb) {
+fn tile_rgba_into_xrgb(
+    out: &mut [u32],
+    out_w: usize,
+    out_h: usize,
+    src: &RgbaImage,
+    bg: Rgb,
+    bg_px: u32,
+) {
     let sw = src.width() as usize;
     let sh = src.height() as usize;
     if sw == 0 || sh == 0 {
@@ -99,10 +131,11 @@ fn tile_rgba_into_xrgb(out: &mut [u32], out_w: usize, out_h: usize, src: &RgbaIm
     for y in 0..out_h {
         let sy = y % sh;
         let row = y * out_w;
+
         for x in 0..out_w {
             let sx = x % sw;
             let px = src.get_pixel(sx as u32, sy as u32).0;
-            out[row + x] = composite_rgba_over_bg(px, bg);
+            out[row + x] = composite_rgba_over_bg(px, bg, bg_px);
         }
     }
 }
@@ -136,7 +169,8 @@ fn fill_size(sw: u32, sh: u32, dw: u32, dh: u32) -> (u32, u32) {
     (rw, rh)
 }
 
-fn composite_rgba_over_bg(px: [u8; 4], bg: Rgb) -> u32 {
+#[inline(always)]
+fn composite_rgba_over_bg(px: [u8; 4], bg: Rgb, bg_px: u32) -> u32 {
     let r = px[0] as u32;
     let g = px[1] as u32;
     let b = px[2] as u32;
@@ -146,7 +180,7 @@ fn composite_rgba_over_bg(px: [u8; 4], bg: Rgb) -> u32 {
         return ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF);
     }
     if a == 0 {
-        return xrgb8888(bg);
+        return bg_px;
     }
 
     let br = bg.r as u32;

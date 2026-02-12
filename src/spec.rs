@@ -27,25 +27,6 @@ impl From<crate::cli::ModeArg> for Mode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum GradientDir {
-    Vertical,
-    Horizontal,
-    Diag1,
-    Diag2,
-}
-
-impl From<crate::cli::GradientDirArg> for GradientDir {
-    fn from(d: crate::cli::GradientDirArg) -> Self {
-        match d {
-            crate::cli::GradientDirArg::Vertical => GradientDir::Vertical,
-            crate::cli::GradientDirArg::Horizontal => GradientDir::Horizontal,
-            crate::cli::GradientDirArg::Diag1 => GradientDir::Diag1,
-            crate::cli::GradientDirArg::Diag2 => GradientDir::Diag2,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Transition {
     None,
     Fade,
@@ -63,9 +44,33 @@ impl From<crate::cli::TransitionArg> for Transition {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum WipeFrom {
+    Left,
+    Right,
+}
+
+impl From<crate::cli::WipeFromArg> for WipeFrom {
+    fn from(w: crate::cli::WipeFromArg) -> Self {
+        match w {
+            crate::cli::WipeFromArg::Left => WipeFrom::Left,
+            crate::cli::WipeFromArg::Right => WipeFrom::Right,
+        }
+    }
+}
+
+impl Default for WipeFrom {
+    fn default() -> Self {
+        WipeFrom::Left
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TransitionSpec {
     pub kind: Transition,
     pub duration: u32,
+
+    #[serde(default)]
+    pub wipe_from: WipeFrom,
 }
 
 impl Default for TransitionSpec {
@@ -73,6 +78,7 @@ impl Default for TransitionSpec {
         TransitionSpec {
             kind: Transition::None,
             duration: 200,
+            wipe_from: WipeFrom::Left,
         }
     }
 }
@@ -96,11 +102,11 @@ impl Rgb {
             {
                 let s = s.trim();
                 let hex = s.strip_prefix('#').unwrap_or(s);
-                
+
                 if hex.len() != 6 {
                     bail!("Invalid colour '{s}': expected #RRGGBB");
                 }
-                
+
                 let r = u8::from_str_radix(&hex[0..2], 16)?;
                 let g = u8::from_str_radix(&hex[2..4], 16)?;
                 let b = u8::from_str_radix(&hex[4..6], 16)?;
@@ -118,7 +124,7 @@ impl Rgb {
             }
         )
     }
-    
+
     pub fn to_hex(self) -> String {
         format!("#{:02X}{:02X}{:02X}", self.r, self.g, self.b)
     }

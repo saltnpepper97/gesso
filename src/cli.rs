@@ -30,6 +30,10 @@ pub enum Command {
         #[arg(long, short = 'd', default_value_t = 850)]
         duration: u32,
 
+        /// Wipe direction (only used when --transition wipe)
+        #[arg(long = "from", short = 'f', value_enum, default_value_t = WipeFromArg::Left)]
+        from: WipeFromArg,
+
         /// Optional output name (later; accepted now for forward-compat)
         #[arg(long, short = 'o')]
         output: Option<String>,
@@ -45,6 +49,10 @@ pub enum Command {
         /// Transition duration in ms
         #[arg(long, short = 'd', default_value_t = 850)]
         duration: u32,
+
+        /// Wipe direction (only used when --transition wipe)
+        #[arg(long = "from", short = 'f', value_enum, default_value_t = WipeFromArg::Left)]
+        from: WipeFromArg,
 
         #[arg(long, short = 'o')]
         output: Option<String>,
@@ -84,4 +92,10 @@ pub enum TransitionArg {
     None,
     Fade,
     Wipe,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum WipeFromArg {
+    Left,
+    Right,
 }

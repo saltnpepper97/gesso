@@ -6,14 +6,12 @@ use eventline as el;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::spec::{Rgb, Transition};
+use crate::spec::{Rgb, Transition, WipeFrom};
 use crate::wallpaper::{
-    paint::{paint_blend_frame_to_frame_fast, paint_wipe_frame_to_frame_fast},
-    util::{arc_eq_slice, ease_out_cubic, xrgb8888},
+    paint::{paint_blend_frame_to_solid_fast, paint_wipe_frame_to_solid_fast},
+    util::{ease_out_cubic, xrgb8888},
     wayland::{self, Engine},
 };
-
-const TARGET_FPS: f32 = 60.0;
 
 #[inline]
 fn surface_matches_output(engine: &Engine, i: usize, output: Option<&str>) -> bool {
@@ -61,11 +59,7 @@ pub fn apply_solid_on(engine: &mut Engine, target: Rgb, output: Option<&str>) ->
         failure = "failed",
         aborted = "aborted",
         {
-            el::info!(
-                "begin output={out} rgb={rgb}",
-                out = out,
-                rgb = rgb_fmt(target)
-            );
+            el::info!("begin output={out} rgb={rgb}", out = out, rgb = rgb_fmt(target));
 
             let qh = engine.qh.clone();
             let mut matched = 0usize;
@@ -138,8 +132,8 @@ pub fn apply_solid_on(engine: &mut Engine, target: Rgb, output: Option<&str>) ->
             }
 
             if applied > 0 {
+                // Flush once. Event pumping happens inside wait_for_free_buffer_idx during animations.
                 engine._conn.flush().context("flush")?;
-                engine.dispatch_pending().context("dispatch_pending")?;
             }
 
             el::info!(
@@ -157,13 +151,35 @@ pub fn apply_solid_on(engine: &mut Engine, target: Rgb, output: Option<&str>) ->
     Ok(())
 }
 
-pub fn fade_to_on(engine: &mut Engine, target: Rgb, duration_ms: u32, output: Option<&str>) -> Result<()> {
-    transition_to_on(engine, target, Transition::Fade, duration_ms, output)
+pub fn fade_to_on(
+    engine: &mut Engine,
+    target: Rgb,
+    duration_ms: u32,
+    output: Option<&str>,
+) -> Result<()> {
+    transition_to_on(engine, target, Transition::Fade, duration_ms, output, WipeFrom::Left)
 }
 
-pub fn wipe_to_on(engine: &mut Engine, target: Rgb, duration_ms: u32, output: Option<&str>) -> Result<()> {
-    transition_to_on(engine, target, Transition::Wipe, duration_ms, output)
+pub fn wipe_to_on(
+    engine: &mut Engine,
+    target: Rgb,
+    duration_ms: u32,
+    output: Option<&str>,
+) -> Result<()> {
+    transition_to_on(engine, target, Transition::Wipe, duration_ms, output, WipeFrom::Left)
 }
+
+pub fn wipe_to_on_from(
+    engine: &mut Engine,
+    target: Rgb,
+    duration_ms: u32,
+    output: Option<&str>,
+    wipe_from: WipeFrom,
+) -> Result<()> {
+    transition_to_on(engine, target, Transition::Wipe, duration_ms, output, wipe_from)
+}
+
+/* ---------- single implementation: fade + wipe ---------- */
 
 pub fn transition_to_on(
     engine: &mut Engine,
@@ -171,11 +187,15 @@ pub fn transition_to_on(
     kind: Transition,
     duration_ms: u32,
     output: Option<&str>,
+    wipe_from: WipeFrom,
 ) -> Result<()> {
+    if kind == Transition::None {
+        return apply_solid_on(engine, target, output);
+    }
+
     let out = output.unwrap_or("(all)");
     let duration_ms = duration_ms.max(16);
     let duration = Duration::from_millis(duration_ms as u64);
-    let frame_dt = Duration::from_secs_f32(1.0 / TARGET_FPS);
 
     el::scope!(
         "gesso.colour.transition",
@@ -184,13 +204,15 @@ pub fn transition_to_on(
         aborted = "aborted",
         {
             el::info!(
-                "begin kind={kind} output={out} rgb={rgb} duration_ms={ms}",
+                "begin kind={kind} output={out} rgb={rgb} duration_ms={ms} wipe_from={wf:?}",
                 kind = kind_name(kind),
                 out = out,
                 rgb = rgb_fmt(target),
-                ms = duration_ms
+                ms = duration_ms,
+                wf = wipe_from
             );
 
+            // Capture "from" frames.
             let mut from_frames: Vec<Option<Arc<[u32]>>> = vec![None; engine.surfaces.len()];
             let mut any_selected = 0usize;
 
@@ -217,23 +239,27 @@ pub fn transition_to_on(
                 return Ok::<(), anyhow::Error>(());
             }
 
-            let mut to_frames: Vec<Option<Arc<[u32]>>> = vec![None; engine.surfaces.len()];
+            // No-op detection WITHOUT allocating "to frames".
+            let to_px = xrgb8888(target);
+            let mut needs = false;
+
             for i in 0..engine.surfaces.len() {
-                let s = &engine.surfaces[i];
                 if !wayland::surface_usable(engine, i) {
                     continue;
                 }
                 if !surface_matches_output(engine, i, output) {
                     continue;
                 }
-                let px = xrgb8888(target);
-                to_frames[i] = Some(vec![px; (s.width * s.height) as usize].into());
-            }
 
-            let mut needs = false;
-            for i in 0..engine.surfaces.len() {
-                if let (Some(a), Some(b)) = (from_frames[i].as_ref(), to_frames[i].as_ref()) {
-                    if !arc_eq_slice(a, b) {
+                if let Some(fromf) = from_frames[i].as_ref() {
+                    // Cheap mismatch scan. If any pixel differs, we need a transition.
+                    if fromf.iter().any(|&px| px != to_px) {
+                        needs = true;
+                        break;
+                    }
+                } else {
+                    let s = &engine.surfaces[i];
+                    if xrgb8888(s.last_colour) != to_px {
                         needs = true;
                         break;
                     }
@@ -254,16 +280,20 @@ pub fn transition_to_on(
 
             let qh = engine.qh.clone();
             let start = Instant::now();
-            let mut frames = 0u32;
+            let mut frames: u32 = 0;
 
+            // Render until duration elapsed.
+            // Pacing is compositor-driven via frame callbacks + buffer release in wayland::wait_for_free_buffer_idx.
             loop {
-                let elapsed = start.elapsed();
+                let now = Instant::now();
+                let elapsed = now.saturating_duration_since(start);
                 if elapsed >= duration {
                     break;
                 }
 
-                let t = ease_out_cubic((elapsed.as_secs_f32() / duration.as_secs_f32()).min(1.0));
-                let tt = (t * 256.0).round() as u16;
+                let raw = (elapsed.as_secs_f32() / duration.as_secs_f32()).min(1.0);
+                let t = ease_out_cubic(raw);
+                let tt = (t * 256.0).round() as u16; // monotonic 0..256
 
                 for i in 0..engine.surfaces.len() {
                     if !wayland::surface_usable(engine, i) {
@@ -273,30 +303,28 @@ pub fn transition_to_on(
                         continue;
                     }
 
-                    let (Some(fromf), Some(tof)) = (&from_frames[i], &to_frames[i]) else {
-                        continue;
-                    };
+                    let Some(fromf) = from_frames[i].as_ref() else { continue };
 
+                    // This call now does the *blocking cadence*:
+                    // - wait for free buffer (release)
+                    // - if callbacks work, also wait for frame_done
                     wayland::wait_for_free_buffer_idx(engine, i)?;
 
                     let s = &mut engine.surfaces[i];
                     match kind {
-                        Transition::Wipe => paint_wipe_frame_to_frame_fast(s, fromf, tof, tt),
-                        _ => paint_blend_frame_to_frame_fast(s, fromf, tof, tt),
+                        Transition::Wipe => paint_wipe_frame_to_solid_fast(s, fromf, to_px, tt, wipe_from),
+                        Transition::Fade => paint_blend_frame_to_solid_fast(s, fromf, to_px, tt),
+                        Transition::None => unreachable!(),
                     }
+
                     wayland::commit_surface(&qh, s, i);
                 }
 
-                engine._conn.flush()?;
-                engine.dispatch_pending()?;
-
+                engine._conn.flush().context("flush")?;
                 frames += 1;
-                let next = start + frame_dt * frames;
-                if next > Instant::now() && next < start + duration {
-                    std::thread::sleep(next - Instant::now());
-                }
             }
 
+            // Finalize to exact target (one allocation per surface at end only).
             for i in 0..engine.surfaces.len() {
                 if !wayland::surface_usable(engine, i) {
                     continue;
@@ -305,20 +333,27 @@ pub fn transition_to_on(
                     continue;
                 }
 
-                let Some(finalf) = to_frames[i].as_ref() else { continue };
-
                 wayland::wait_for_free_buffer_idx(engine, i)?;
                 let s = &mut engine.surfaces[i];
-                wayland::paint_frame_u32(s, finalf);
+
+                let w = s.width as usize;
+                let h = s.height as usize;
+                if w == 0 || h == 0 {
+                    continue;
+                }
+
+                let finalf: Arc<[u32]> = vec![to_px; w * h].into();
+                wayland::paint_frame_u32(s, &finalf);
                 wayland::commit_surface(&qh, s, i);
 
                 s.last_colour = target;
                 s.has_image = false;
-                s.last_frame = Some(Arc::clone(finalf));
+                s.last_frame = Some(finalf);
             }
 
-            engine._conn.flush()?;
-            engine.dispatch_pending()?;
+            engine._conn.flush().context("flush")?;
+            // One dispatch at the end is OK (helps deliver final release/done quickly).
+            let _ = engine.dispatch_pending();
 
             el::info!("done kind={kind} frames={frames}", kind = kind_name(kind), frames = frames);
             Ok::<(), anyhow::Error>(())

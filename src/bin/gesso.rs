@@ -9,7 +9,7 @@ use std::os::unix::net::UnixStream;
 use gesso::cli::{Cli, Command};
 use gesso::path::paths;
 use gesso::protocol::{Request, Response};
-use gesso::spec::{Mode, Rgb, Spec, Transition, TransitionSpec};
+use gesso::spec::{Mode, Rgb, Spec, Transition, TransitionSpec, WipeFrom};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -23,6 +23,7 @@ fn main() -> Result<()> {
             transition,
             duration,
             output,
+            from,
         } => {
             let path = resolve_target(&target)?;
             let colour = match colour {
@@ -32,6 +33,7 @@ fn main() -> Result<()> {
             let transition = TransitionSpec {
                 kind: Transition::from(transition),
                 duration,
+                wipe_from: WipeFrom::from(from),
             };
             Request::Apply {
                 spec: Spec::Image {
@@ -49,10 +51,12 @@ fn main() -> Result<()> {
             transition,
             duration,
             output,
+            from,
         } => {
             let transition = TransitionSpec {
                 kind: Transition::from(transition),
                 duration,
+                wipe_from: WipeFrom::from(from),
             };
             Request::Apply {
                 spec: Spec::Colour {

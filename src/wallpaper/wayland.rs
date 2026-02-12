@@ -233,6 +233,64 @@ impl Engine {
             current: None,
         })
     }
+    
+    pub fn warmup(&mut self) -> Result<()> {
+        // Make sure outputs/surfaces exist + are configured + have buffers.
+        // This pulls the expensive "first time" work out of the first user-visible animation.
+        let _ = self.roundtrip();
+        self.ensure_surfaces()?;
+        self.wait_for_configured()?;
+        self.ensure_buffers_for_all_surfaces()?;
+
+        // Fault in SHM pages: page faults are a huge source of first-apply jank.
+        // We touch one u32 per page, not a full memset.
+        const PAGE: usize = 4096;
+        const WORD: usize = 4;
+
+        for s in self.surfaces.iter_mut() {
+            if !s.alive || !s.configured || s.width == 0 || s.height == 0 {
+                continue;
+            }
+
+            for which in 0..2 {
+                let buf = s.buffers.slot_mut(which);
+                let Some(m) = buf.mmap.as_mut() else { continue };
+
+                let len = m.len();
+                let step = PAGE.max(WORD);
+                let mut off = 0usize;
+
+                while off + WORD <= len {
+                    // write 4 bytes
+                    m[off + 0] = 0;
+                    m[off + 1] = 0;
+                    m[off + 2] = 0;
+                    m[off + 3] = 0;
+                    off += step;
+                }
+            }
+        }
+
+        // Optional but helps: do one cheap commit per usable surface.
+        // This "primes" buffer release + frame callback behavior before the first animation.
+        let qh = self.qh.clone();
+        for si in 0..self.surfaces.len() {
+            if !crate::wallpaper::wayland::surface_usable(self, si) {
+                continue;
+            }
+
+            crate::wallpaper::wayland::wait_for_free_buffer_idx(self, si)?;
+            let s = &mut self.surfaces[si];
+
+            // No need to repaint. Just attach/commit current buffer to get things moving.
+            crate::wallpaper::wayland::commit_surface(&qh, s, si);
+        }
+
+        self._conn.flush().context("flush")?;
+        let _ = self.dispatch_pending();
+
+        Ok(())
+    }
 
     pub fn probe(&self) -> Probe {
         Probe {
@@ -244,7 +302,6 @@ impl Engine {
         }
     }
 
-    // ---- IMPORTANT: never lose the event queue even on error ----
     pub fn roundtrip(&mut self) -> Result<()> {
         let mut q = self.event_queue.take().context("event_queue missing")?;
         let res = q.roundtrip(self).context("wayland roundtrip");
@@ -571,6 +628,7 @@ fn dispatch_with_timeout(&mut self, timeout: Duration) -> Result<()> {
                         crate::spec::Transition::Fade,
                         transition.duration,
                         out,
+                        transition.wipe_from,
                     )?,
                     crate::spec::Transition::Wipe => crate::wallpaper::colour::transition_to_on(
                         self,
@@ -578,6 +636,7 @@ fn dispatch_with_timeout(&mut self, timeout: Duration) -> Result<()> {
                         crate::spec::Transition::Wipe,
                         transition.duration,
                         out,
+                        transition.wipe_from,
                     )?,
                 }
             }
@@ -761,11 +820,7 @@ pub(crate) fn surface_selected(engine: &Engine, i: usize, output: Option<&str>) 
 /* ---------- Shared helpers used by colour.rs + image.rs ---------- */
 
 pub(crate) fn wait_for_free_buffer_idx(engine: &mut Engine, i: usize) -> Result<()> {
-    // Key rule: DO NOT let requests hang forever.
-    // We avoid libc poll() by pumping dispatch_pending() in bounded time.
-
     const WARN_AFTER: Duration = Duration::from_millis(250);
-    const DISABLE_FRAME_CB_AFTER: Duration = Duration::from_millis(200);
     const HARD_BAIL_AFTER: Duration = Duration::from_millis(1500);
 
     let start = Instant::now();
@@ -774,7 +829,6 @@ pub(crate) fn wait_for_free_buffer_idx(engine: &mut Engine, i: usize) -> Result<
     loop {
         let elapsed = start.elapsed();
 
-        // Hard bail: do not let ANY request hang forever.
         if elapsed >= HARD_BAIL_AFTER {
             let name = engine.surfaces[i].output_name.as_deref().unwrap_or("(unknown)");
             el::error!(
@@ -794,62 +848,45 @@ pub(crate) fn wait_for_free_buffer_idx(engine: &mut Engine, i: usize) -> Result<
                 s.frame_cb = None;
                 s.frame_callback_ok = false;
             }
-
-            // Return Ok so callers proceed. Worst case: we skip perfect pacing,
-            // but we DO NOT freeze the daemon/client.
             return Ok(());
         }
 
-        // Prefer a free buffer if possible.
-        {
+        // Step 1: prefer a free buffer
+        let need_frame_wait = {
             let s = &mut engine.surfaces[i];
             if s.buffers.current_is_busy() {
                 s.buffers.swap_to_free();
             }
 
-            let ready = if s.frame_callback_ok {
-                !s.buffers.current_is_busy() && !s.frame_pending
+            let buf_free = !s.buffers.current_is_busy();
+            if !buf_free {
+                false
             } else {
-                !s.buffers.current_is_busy()
-            };
-
-            if ready {
-                if warned {
-                    el::info!(
-                        "wayland.wait_for_free_buffer ok si={si} elapsed_ms={ms}",
-                        si = i as i64,
-                        ms = elapsed.as_millis() as i64
-                    );
-                }
-                return Ok(());
+                // buffer is free. If callbacks are enabled and one is pending, wait for it.
+                s.frame_callback_ok && s.frame_pending
             }
-        }
+        };
 
-        // Disable frame-callback pacing if it looks stuck.
-        if elapsed >= DISABLE_FRAME_CB_AFTER {
-            let disabled = {
-                let s = &mut engine.surfaces[i];
-                if s.frame_callback_ok && s.frame_pending {
-                    s.frame_callback_ok = false;
-                    s.frame_pending = false;
-                    s.frame_cb = None;
-                    true
-                } else {
-                    false
-                }
-            };
-
-            if disabled {
-                let name = engine.surfaces[i].output_name.as_deref().unwrap_or("(unknown)");
-                el::warn!(
-                    "wayland.frame_callback.disabled si={si} name={name} elapsed_ms={ms}",
+        // If buffer is free and no frame wait needed -> go.
+        if !engine.surfaces[i].buffers.current_is_busy() && !need_frame_wait {
+            if warned {
+                el::info!(
+                    "wayland.wait_for_free_buffer ok si={si} elapsed_ms={ms}",
                     si = i as i64,
-                    name = name,
                     ms = elapsed.as_millis() as i64
                 );
             }
+            return Ok(());
         }
 
+        // If we only need to wait for the compositor tick, do that (fast path).
+        if !engine.surfaces[i].buffers.current_is_busy() && need_frame_wait {
+            wait_for_frame_if_enabled(engine, i)?;
+            // loop again to re-check
+            continue;
+        }
+
+        // Otherwise we are buffer-starved: pump events until buffer release.
         if !warned && elapsed >= WARN_AFTER {
             warned = true;
             let name = engine.surfaces[i].output_name.as_deref().unwrap_or("(unknown)");
@@ -863,10 +900,8 @@ pub(crate) fn wait_for_free_buffer_idx(engine: &mut Engine, i: usize) -> Result<
             );
         }
 
-        // Pump events without blocking forever.        
         engine._conn.flush().context("flush")?;
         engine.dispatch_with_timeout(Duration::from_millis(16))?;
-        std::thread::sleep(Duration::from_millis(1));
     }
 }
 
@@ -875,9 +910,11 @@ pub(crate) fn commit_surface(
     s: &mut SurfaceState,
     surface_index: usize,
 ) {
-    // Always request a frame callback if one is not already pending.
-    // We only *pace* on callbacks when frame_callback_ok == true.
-    if !s.frame_pending {
+    // Only request callbacks if we think they work OR we are still probing them.
+    // If disabled, don't create callbacks that might never fire.
+    let should_request_cb = (s.frame_callback_ok || s.frame_tick < 2) && !s.frame_pending;
+
+    if should_request_cb {
         let cb = s.surface.frame(qh, surface_index);
         s.frame_cb = Some(cb);
         s.frame_pending = true;
@@ -896,6 +933,46 @@ pub(crate) fn commit_surface(
             si = surface_index as i64,
             name = s.output_name.as_deref().unwrap_or("(unknown)")
         );
+    }
+}
+
+pub(crate) fn wait_for_frame_if_enabled(engine: &mut Engine, si: usize) -> Result<()> {
+    // If callbacks aren't working, don't wait on them.
+    if !engine.surfaces.get(si).map(|s| s.frame_callback_ok).unwrap_or(false) {
+        return Ok(());
+    }
+
+    // If no callback is pending, nothing to wait for.
+    if !engine.surfaces.get(si).map(|s| s.frame_pending).unwrap_or(false) {
+        return Ok(());
+    }
+
+    const SOFT_TIMEOUT: Duration = Duration::from_millis(16);
+    const HARD_TIMEOUT: Duration = Duration::from_millis(200);
+
+    let start = Instant::now();
+    loop {
+        if !engine.surfaces.get(si).map(|s| s.frame_pending).unwrap_or(false) {
+            return Ok(());
+        }
+
+        if start.elapsed() >= HARD_TIMEOUT {
+            // Disable pacing for this surface (don't freeze animations)
+            let name = engine.surfaces[si].output_name.as_deref().unwrap_or("(unknown)");
+            el::warn!(
+                "wayland.frame_callback.stuck_disable si={si} name={name}",
+                si = si as i64,
+                name = name
+            );
+            let s = &mut engine.surfaces[si];
+            s.frame_callback_ok = false;
+            s.frame_pending = false;
+            s.frame_cb = None;
+            return Ok(());
+        }
+
+        engine._conn.flush().context("flush")?;
+        engine.dispatch_with_timeout(SOFT_TIMEOUT)?;
     }
 }
 
