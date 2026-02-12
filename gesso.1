@@ -4,7 +4,17 @@ gesso \- deterministic Wayland wallpaper controller
 
 .SH SYNOPSIS
 .B gesso
-.RI <command> " [options]"
+.RI [ options ] " <command> [command-options]"
+
+.SH OPTIONS
+
+.TP
+.BR \-V ", " \-\-version
+Print version information and exit.
+
+.TP
+.BR \-h ", " \-\-help
+Show help information and exit.
 
 .SH DESCRIPTION
 .B gesso
@@ -73,6 +83,21 @@ modes.
 Transition type. Default is
 .BR none .
 
+If
+.B wipe
+is selected, a direction must be specified using
+.BR \-\-from .
+
+.TP
+.BR \-f ", " \-\-from " <left|right>"
+Direction for wipe transitions.
+
+Required when
+.B wipe
+is used.
+
+Specifies the edge from which the new wallpaper enters.
+
 .TP
 .BR \-d ", " \-\-duration " <milliseconds>"
 Duration of the transition in milliseconds.
@@ -107,6 +132,19 @@ Set a solid colour wallpaper.
 .TP
 .BR \-t ", " \-\-transition " <none|fade|wipe>"
 Transition type.
+
+If
+.B wipe
+is selected, a direction must be specified using
+.BR \-\-from .
+
+.TP
+.BR \-f ", " \-\-from " <left|right>"
+Direction for wipe transitions.
+
+Required when
+.B wipe
+is used.
 
 .TP
 .BR \-d ", " \-\-duration " <milliseconds>"

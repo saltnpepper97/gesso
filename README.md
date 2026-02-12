@@ -63,11 +63,11 @@ In your wayland compositors autostart section start gesso daemon with:
 
 Fade:
 
-    gesso set ~/Pictures/wallpaper.png --transition fade --duration-ms 600
+    gesso set ~/Pictures/wallpaper.png --transition fade --duration 600
 
 Wipe:
 
-    gesso set ~/Pictures/wallpaper.png --transition wipe --duration-ms 750
+    gesso set ~/Pictures/wallpaper.png --transition wipe --duration 750
 
 ### Solid colour
 
@@ -75,8 +75,8 @@ Wipe:
 
 With transition:
 
-    gesso colour "#0b0f14" --transition fade --duration-ms 200
-    gesso colour "#0b0f14" --transition wipe --duration-ms 260
+    gesso colour "#0b0f14" --transition fade --duration 200
+    gesso colour "#0b0f14" --transition wipe --from right --duration 260
 
 ### Target a specific output
 
@@ -118,10 +118,14 @@ Options:
 - `-t, --transition <none|fade|wipe>`  
   Default: `none`
 
-- `-d, --duration-ms <ms>`  
-  Default: `550`
+- `-d, --duration <ms>`  
+  Default: `850`
 
-- `-o, --output <name>`  
+- `-f, --from <left|right>`
+  Wipe direction (only used when `--transition wipe`)
+  Default: `left`
+
+- `-o, --output <name>`
   Target a specific output
 
 ---
@@ -137,8 +141,11 @@ Options:
 - `-t, --transition <none|fade|wipe>`  
   Default: `none`
 
-- `-d, --duration-ms <ms>`  
-  Default: `200`
+- `-d, --duration <ms>`  
+  Default: `850`
+
+- `-f, --from <left|right>`
+  Default: `left`
 
 - `-o, --output <name>`  
   Target a specific output

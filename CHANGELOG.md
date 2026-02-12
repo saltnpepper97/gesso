@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here.
 
+## 0.2.1
+
+### Improvements
+
+- Added documentation to man page for `-f/--from`
+- Added documentation to man page for `-V/--version`
+- Added doc comments so clap prints them in `gesso set -h` / `gesso colour -h`.
+
 ## 0.2.0
 
 ### New Features
