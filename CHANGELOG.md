@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## 0.2.2
+
+### Improvements
+
+- Daemon: Added single instance enforcement via `libc::flock`
+
 ## 0.2.1
 
 ### Improvements
