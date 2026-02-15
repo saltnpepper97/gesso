@@ -3,20 +3,56 @@
 
 use anyhow::{Context, Result};
 use std::fs;
+use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::logrotate::{self, LogPolicy};
 use crate::path::paths;
 use crate::protocol::{CurrentStatus, DoctorCheck, Request, Response};
 use crate::spec::Spec;
 use crate::wallpaper::Engine;
 
-use crate::logrotate::{self, LogPolicy};
-
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Single-instance lock (libc::flock)
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn lock_path(runtime_dir: &Path) -> PathBuf {
+    runtime_dir.join("gesso.lock")
+}
+
+/// Try to acquire a non-blocking exclusive lock.
+/// Keep the returned File alive for the daemon lifetime.
+/// If already locked -> Ok(None) (another daemon instance is running).
+fn try_acquire_single_instance_lock(lock_path: &Path) -> Result<Option<std::fs::File>> {
+    let f = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(lock_path)
+        .with_context(|| format!("open lock file: {}", lock_path.display()))?;
+
+    let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc == 0 {
+        Ok(Some(f))
+    } else {
+        let e = std::io::Error::last_os_error();
+        match e.raw_os_error() {
+            Some(libc::EWOULDBLOCK) => Ok(None),
+            _ => Err(e).with_context(|| format!("flock: {}", lock_path.display())),
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Eventline init
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// Initialize eventline once.
 /// We keep this local so daemon.rs stays the only place that knows how runtime is bootstrapped.
@@ -54,6 +90,21 @@ pub fn run_daemon() -> Result<()> {
     fs::create_dir_all(&p.state_dir).context("create state dir")?;
     fs::create_dir_all(&p.runtime_dir).context("create runtime dir")?;
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // SINGLE INSTANCE ENFORCEMENT
+    // ─────────────────────────────────────────────────────────────────────────
+    // Acquire lock BEFORE touching the socket file so we never delete a live daemon's socket.
+    let lock_file_path = lock_path(&p.runtime_dir);
+    let _lock = match try_acquire_single_instance_lock(&lock_file_path)? {
+        Some(f) => f, // keep alive for lifetime
+        None => {
+            // eventline console is disabled, so print directly.
+            eprintln!("gesso: another instance is already running.");
+            return Ok(());
+        }
+    };
+    // ─────────────────────────────────────────────────────────────────────────
+
     // Rotate/prepare the SINGLE canonical log file *before* eventline opens it.
     let had_existing = logrotate::prepare_log_file(&p.log_path, LogPolicy::default())
         .with_context(|| format!("prepare_log_file: {}", p.log_path.display()))?;
@@ -85,7 +136,7 @@ pub fn run_daemon() -> Result<()> {
                 p.log_path.display(),
             );
 
-            // Remove stale socket file
+            // Remove stale socket file (safe: we hold the lock)
             if p.sock_path.exists() {
                 let _ = fs::remove_file(&p.sock_path);
             }
@@ -106,7 +157,7 @@ pub fn run_daemon() -> Result<()> {
             )?;
 
             // Warm up Wayland: configure layer surfaces, allocate SHM buffers,
-            // and fault-in mmap pages so the first real animation isn't choppy.            
+            // and fault-in mmap pages so the first real animation isn't choppy.
             let _ = eventline::scope!(
                 "gesso.wayland.warmup",
                 success = "ready",
