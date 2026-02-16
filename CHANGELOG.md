@@ -1,21 +1,28 @@
 # Changelog
-
 All notable changes to this project are documented here.
+## 0.3.0
+
+### Improvements
+- **Memory optimization**: Eliminated extra frame copies during cache load/store operations
+  - Read cached frames directly into pre-sized `Vec<u32>` (no intermediate `Vec<u8>` allocations)
+  - Stream writes directly from `u32` slice to temp file for atomic rename
+  - Clear in-memory `last_frame` copies after daemon restore completes
+  - Frames reload from disk cache on-demand for transitions (~1-2ms overhead)
+  - Reduces steady-state RSS: ~113MB → ~87MB → ~73MB on typical dual-monitor setups
+  - Reduced number of stored images in cache from top 5 to top 3
+- **Code organization**: Refactored daemon implementation into `daemon/` module (removed monolithic `daemon.rs`)
 
 ## 0.2.3
-
 - Add session alive check in NEW `session.rs` file which kills gesso daemon when wayland session is no longer alive.
 
 ## 0.2.2
 
 ### Improvements
-
 - Daemon: Added single instance enforcement via `libc::flock`
 
 ## 0.2.1
 
 ### Improvements
-
 - Added documentation to man page for `-f/--from`
 - Added documentation to man page for `-V/--version`
 - Added documentation comments so clap prints them in `gesso set -h` / `gesso colour -h`.
@@ -28,38 +35,32 @@ All notable changes to this project are documented here.
 ## 0.2.0
 
 ### New Features
-
-- Added `--from` (`-f`) CLI option for wipe transitions, allowing animations from the left or right.
+- Added `--from` `-f`) CLI option for wipe transitions, allowing animations from the left or right.
 - Added a 5-entry MRU wallpaper cache.
 - Replaced the previous single-image cache with a multi-entry index (maximum 5 entries).
 - Store rendered frames per cache entry.
 - Automatically evict the least recently used entry when capacity is exceeded.
 
 ### Improvements
-
 - Optimized Wayland startup by warming up surfaces and buffers to reduce first-animation stutter.
 - Improved image, colour, and Wayland rendering paths for smoother animations and better overall responsiveness.
 
 ## 0.1.3
 
 ### Fixes
-
 - Use `Layer::Bottom` with `exclusive_zone = -1` to ensure wallpapers render behind panels.
 - Set the default transition duration to 850ms for both image and colour transitions.
 
 ## 0.1.2
 
 ### Fixes
-
 - `gesso stop` now correctly terminates the daemon.
 - CLI now reports version via `-V`.
 
 ## 0.1.1
 
 ### Fixes
-
 - Make Wayland wallpaper layer surfaces input-transparent so compositor root mouse bindings (e.g. labwc right-click menu) work correctly.
 
 ## 0.1.0
-
 - Initial release.
