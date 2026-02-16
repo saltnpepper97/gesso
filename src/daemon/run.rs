@@ -148,6 +148,10 @@ pub fn run_daemon() -> Result<()> {
                 );
             }
 
+            // Clear in-memory frame copies after restore to reduce idle memory usage.
+            // Frames will be reloaded from disk cache on next transition (negligible latency).
+            let _ = crate::wallpaper::image::clear_surface_frames(&mut engine);
+
             loop {
                 if shutdown_flag.load(Ordering::Relaxed) {
                     eventline::info!("session dead; exiting daemon loop");

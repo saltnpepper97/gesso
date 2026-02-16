@@ -48,6 +48,45 @@ fn selected_surfaces(engine: &Engine, output: Option<&str>) -> Vec<usize> {
     v
 }
 
+/// Clear last_frame from all surfaces to save memory at idle.
+/// Frames will be reloaded from cache or regenerated on next transition.
+pub fn clear_surface_frames(engine: &mut Engine) -> Result<()> {
+    el::scope!(
+        "gesso.image.clear_frames",
+        success = "cleared",
+        failure = "failed",
+        aborted = "aborted",
+        {
+            let mut total_bytes = 0i64;
+            let mut count = 0i64;
+
+            for s in &mut engine.surfaces {
+                if let Some(frame) = s.last_frame.take() {
+                    let bytes = frame.len() * 4;
+                    total_bytes += bytes as i64;
+                    count += 1;
+
+                    el::debug!(
+                        "cleared last_frame w={} h={} bytes={}",
+                        s.width,
+                        s.height,
+                        bytes as i64
+                    );
+                }
+            }
+
+            el::info!(
+                "cleared surfaces={} total_bytes={} mb={:.1}",
+                count,
+                total_bytes,
+                total_bytes as f64 / (1024.0 * 1024.0)
+            );
+
+            Ok::<(), anyhow::Error>(())
+        }
+    )
+}
+
 /// Direction-correct wipe from `fromf` to `tof`.
 /// `tt` is monotonic 0..=256 (do NOT reverse time).
 ///

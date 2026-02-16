@@ -5,7 +5,7 @@ use anyhow::{bail, Context, Result};
 use eventline as el;
 use std::{
     fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -13,7 +13,7 @@ use std::{
 
 use crate::spec::{Mode, Rgb, Spec};
 
-const MAX_CACHED_IMAGES: usize = 5;
+const MAX_CACHED_IMAGES: usize = 3;
 
 /* ---------- paths ---------- */
 
@@ -248,7 +248,8 @@ pub fn compute_image_key(spec: &Spec) -> Result<ImageKey> {
             };
 
             let expanded = crate::path::expand_user_path(path)?;
-            let md = fs::metadata(&expanded).with_context(|| format!("metadata: {}", expanded.display()))?;
+            let md = fs::metadata(&expanded)
+                .with_context(|| format!("metadata: {}", expanded.display()))?;
             let (secs, nanos) = file_times(&expanded)?;
 
             el::debug!(
@@ -387,7 +388,12 @@ pub fn cached_image_matches(spec: &Spec) -> Result<bool> {
 
 /* ---------- frame blobs (multi-cache) ---------- */
 
-pub fn load_frame(entry_id: u64, surface_index: usize, w: u32, h: u32) -> Result<Option<Arc<[u32]>>> {
+pub fn load_frame(
+    entry_id: u64,
+    surface_index: usize,
+    w: u32,
+    h: u32,
+) -> Result<Option<Arc<[u32]>>> {
     el::scope!(
         "gesso.cache.load_frame",
         success = "loaded",
@@ -395,8 +401,11 @@ pub fn load_frame(entry_id: u64, surface_index: usize, w: u32, h: u32) -> Result
         aborted = "aborted",
         {
             let p = frame_path(entry_id, surface_index, w, h);
-            let data = match fs::read(&p) {
-                Ok(d) => d,
+
+            let want_bytes = (w as usize) * (h as usize) * 4;
+
+            let mut f = match fs::File::open(&p) {
+                Ok(f) => f,
                 Err(_) => {
                     el::debug!(
                         "no cached frame id={id} si={si} w={w} h={h}",
@@ -409,22 +418,32 @@ pub fn load_frame(entry_id: u64, surface_index: usize, w: u32, h: u32) -> Result
                 }
             };
 
-            let want_bytes = (w as usize) * (h as usize) * 4;
-            if data.len() != want_bytes {
-                el::warn!(
-                    "frame size mismatch id={id} si={si} got={got} want={want}",
-                    id = entry_id as i64,
-                    si = surface_index as i64,
-                    got = data.len() as i64,
-                    want = want_bytes as i64
-                );
-                return Ok::<Option<Arc<[u32]>>, anyhow::Error>(None);
+            // Quick sanity check against metadata size (cheap).
+            if let Ok(md) = f.metadata() {
+                let got = md.len() as usize;
+                if got != want_bytes {
+                    el::warn!(
+                        "frame size mismatch id={id} si={si} got={got} want={want}",
+                        id = entry_id as i64,
+                        si = surface_index as i64,
+                        got = got as i64,
+                        want = want_bytes as i64
+                    );
+                    return Ok::<Option<Arc<[u32]>>, anyhow::Error>(None);
+                }
             }
 
-            let mut out = Vec::<u32>::with_capacity(want_bytes / 4);
-            for chunk in data.chunks_exact(4) {
-                out.push(u32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
-            }
+            // Allocate the final output once and read bytes straight into it.
+            let n_words = want_bytes / 4;
+            let mut out: Vec<u32> = vec![0u32; n_words];
+
+            // SAFETY: u32 is 4 bytes. We treat the vec's backing memory as a u8 slice
+            // for I/O. The file format is native-endian u32 written via to_ne_bytes.
+            let out_bytes: &mut [u8] = unsafe {
+                std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, want_bytes)
+            };
+
+            f.read_exact(out_bytes).context("read cached frame")?;
 
             el::info!(
                 "loaded frame id={id} si={si} w={w} h={h} pixels={pixels}",
@@ -440,7 +459,13 @@ pub fn load_frame(entry_id: u64, surface_index: usize, w: u32, h: u32) -> Result
     )
 }
 
-pub fn store_frame(entry_id: u64, surface_index: usize, w: u32, h: u32, frame: &Arc<[u32]>) -> Result<()> {
+pub fn store_frame(
+    entry_id: u64,
+    surface_index: usize,
+    w: u32,
+    h: u32,
+    frame: &Arc<[u32]>,
+) -> Result<()> {
     el::scope!(
         "gesso.cache.store_frame",
         success = "stored",
@@ -452,10 +477,19 @@ pub fn store_frame(entry_id: u64, surface_index: usize, w: u32, h: u32, frame: &
                 fs::create_dir_all(parent).context("create entry frames dir")?;
             }
 
-            let mut bytes = Vec::with_capacity(frame.len() * 4);
-            for &px in frame.iter() {
-                bytes.extend_from_slice(&px.to_ne_bytes());
+            let want_words = (w as usize) * (h as usize);
+            if frame.len() != want_words {
+                el::warn!(
+                    "store_frame len mismatch id={id} si={si} got_words={got} want_words={want}",
+                    id = entry_id as i64,
+                    si = surface_index as i64,
+                    got = frame.len() as i64,
+                    want = want_words as i64
+                );
+                bail!("store_frame: frame length does not match w*h");
             }
+
+            let want_bytes = want_words * 4;
 
             el::info!(
                 "storing frame id={id} si={si} w={w} h={h} pixels={pixels} bytes={bytes}",
@@ -464,10 +498,25 @@ pub fn store_frame(entry_id: u64, surface_index: usize, w: u32, h: u32, frame: &
                 w = w as i64,
                 h = h as i64,
                 pixels = frame.len() as i64,
-                bytes = bytes.len() as i64
+                bytes = want_bytes as i64
             );
 
-            atomic_write(&p, &bytes)?;
+            // Atomic write without building a giant Vec<u8>.
+            let tmp = p.with_extension("tmp");
+            {
+                let mut f = fs::File::create(&tmp).context("create tmp")?;
+
+                // SAFETY: u32 slice is exactly 4 bytes per element. We write native-endian
+                // bytes that match load_frame().
+                let bytes: &[u8] = unsafe {
+                    std::slice::from_raw_parts(frame.as_ptr() as *const u8, want_bytes)
+                };
+
+                f.write_all(bytes).context("write tmp")?;
+                let _ = f.sync_all();
+            }
+            fs::rename(&tmp, &p).context("rename tmp")?;
+
             Ok::<(), anyhow::Error>(())
         }
     )
