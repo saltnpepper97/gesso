@@ -1,6 +1,6 @@
 [package]
 name = "gesso"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 description = "Deterministic Wayland wallpaper daemon/controller"
 license = "MIT"
@@ -24,3 +24,5 @@ tokio = { version = "1.49.0", features = ["rt", "rt-multi-thread", "macros", "ti
 wayland-client = "0.31.12"
 wayland-protocols = "0.32.10"
 wayland-protocols-wlr = { version = "0.3.10", features = ["client"] }
+zbus = "5.13.2"
+zvariant = "5.9.2"

@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented here.
 
+## 0.2.3
+
+- Add session alive check in NEW `session.rs` file which kills gesso daemon when wayland session is no longer alive.
+
 ## 0.2.2
 
 ### Improvements

@@ -8,11 +8,16 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::Duration;
 
 use crate::logrotate::{self, LogPolicy};
 use crate::path::paths;
 use crate::protocol::{CurrentStatus, DoctorCheck, Request, Response};
+use crate::session;
 use crate::spec::Spec;
 use crate::wallpaper::Engine;
 
@@ -121,6 +126,16 @@ pub fn run_daemon() -> Result<()> {
     // Write a run header using eventline (eventline is the ONLY logging).
     eventline::info!("{}", logrotate::run_header());
 
+    // Refuse to start outside an active Wayland session.
+    if let Err(e) = session::ensure_wayland_alive() {
+        eventline::error!("not starting: {e}");
+        return Ok(());
+    }
+
+    // Shared shutdown flag for watcher + accept loop.
+    let shutdown_flag = Arc::new(AtomicBool::new(false));
+    session::spawn_wayland_socket_watcher(shutdown_flag.clone());
+
     eventline::scope!(
         "gesso.daemon",
         success = "exiting",
@@ -143,6 +158,11 @@ pub fn run_daemon() -> Result<()> {
 
             let listener = UnixListener::bind(&p.sock_path).context("bind ctl.sock")?;
             let _ = fs::set_permissions(&p.sock_path, fs::Permissions::from_mode(0o600));
+
+            // Make accept loop stoppable (so the watcher can trigger shutdown).
+            listener
+                .set_nonblocking(true)
+                .context("set_nonblocking on ctl.sock")?;
 
             // Build engine
             let mut engine: Engine = eventline::scope!(
@@ -192,15 +212,14 @@ pub fn run_daemon() -> Result<()> {
                 );
             }
 
-            let shutdown = false;
-
-            for conn in listener.incoming() {
-                if shutdown {
+            loop {
+                if shutdown_flag.load(Ordering::Relaxed) {
+                    eventline::info!("session dead; exiting daemon loop");
                     break;
                 }
 
-                match conn {
-                    Ok(mut stream) => {
+                match listener.accept() {
+                    Ok((mut stream, _addr)) => {
                         let peer = stream
                             .peer_addr()
                             .ok()
@@ -233,6 +252,7 @@ pub fn run_daemon() -> Result<()> {
                         match res {
                             Ok(true) => {
                                 eventline::info!("shutdown requested; exiting daemon loop");
+                                shutdown_flag.store(true, Ordering::Relaxed);
                                 break;
                             }
                             Ok(false) => {}
@@ -249,13 +269,20 @@ pub fn run_daemon() -> Result<()> {
                             }
                         }
                     }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        // Nothing to accept; keep loop responsive to watcher shutdown.
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
                     Err(e) => {
                         eventline::error!("accept error err={}", e);
+                        std::thread::sleep(Duration::from_millis(200));
                     }
                 }
             }
 
-            // Best effort: remove socket on exit.
+            // Best effort: stop wallpaper when we exit due to session death.
+            let _ = engine.stop();
+
             let _ = fs::remove_file(&p.sock_path);
             eventline::info!("daemon exiting");
 
