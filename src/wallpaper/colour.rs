@@ -4,25 +4,12 @@
 use anyhow::{Context, Result};
 use eventline as el;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use crate::spec::{Rgb, Transition, WipeFrom};
 use crate::wallpaper::{
-    paint::{paint_blend_frame_to_solid_fast, paint_wipe_frame_to_solid_fast},
-    paint::ease_out_cubic,
+    animations,
     wayland::{self, Engine},
 };
-
-#[inline]
-fn surface_matches_output(engine: &Engine, i: usize, output: Option<&str>) -> bool {
-    let Some(name) = engine.surfaces[i].output_name.as_deref() else {
-        return output.is_none();
-    };
-    match output {
-        None => true,
-        Some(want) => name == want,
-    }
-}
 
 #[inline]
 fn rgb_fmt(c: Rgb) -> String {
@@ -71,7 +58,13 @@ pub fn apply_solid_on(engine: &mut Engine, target: Rgb, output: Option<&str>) ->
                     skipped += 1;
                     continue;
                 }
-                if !surface_matches_output(engine, i, output) {
+
+                // Output filter.
+                let matches = match output {
+                    None => true,
+                    Some(want) => engine.surfaces[i].output_name.as_deref() == Some(want),
+                };
+                if !matches {
                     continue;
                 }
                 matched += 1;
@@ -132,7 +125,6 @@ pub fn apply_solid_on(engine: &mut Engine, target: Rgb, output: Option<&str>) ->
             }
 
             if applied > 0 {
-                // Flush once. Event pumping happens inside wait_for_free_buffer_idx during animations.
                 engine._conn.flush().context("flush")?;
             }
 
@@ -195,7 +187,6 @@ pub fn transition_to_on(
 
     let out = output.unwrap_or("(all)");
     let duration_ms = duration_ms.max(16);
-    let duration = Duration::from_millis(duration_ms as u64);
 
     el::scope!(
         "gesso.colour.transition",
@@ -212,147 +203,86 @@ pub fn transition_to_on(
                 wf = wipe_from
             );
 
-            // Capture "from" frames.
-            let mut from_frames: Vec<Option<Arc<[u32]>>> = vec![None; engine.surfaces.len()];
-            let mut any_selected = 0usize;
+            let sel = animations::selected_surfaces(engine, output);
 
-            for i in 0..engine.surfaces.len() {
-                let s = &engine.surfaces[i];
-                if !wayland::surface_usable(engine, i) {
-                    continue;
-                }
-                if !surface_matches_output(engine, i, output) {
-                    continue;
-                }
-                any_selected += 1;
-
-                if let Some(f) = s.last_frame.as_ref() {
-                    from_frames[i] = Some(Arc::clone(f));
-                } else {
-                    let px = s.last_colour.xrgb8888();
-                    from_frames[i] = Some(vec![px; (s.width * s.height) as usize].into());
-                }
-            }
-
-            if any_selected == 0 {
+            if sel.is_empty() {
                 el::warn!("no selected surfaces output={out}", out = out);
                 return Ok::<(), anyhow::Error>(());
             }
 
-            // No-op detection WITHOUT allocating "to frames".
+            // No-op detection: skip the transition if every pixel already matches target.
             let to_px = target.xrgb8888();
-            let mut needs = false;
-
-            for i in 0..engine.surfaces.len() {
-                if !wayland::surface_usable(engine, i) {
-                    continue;
-                }
-                if !surface_matches_output(engine, i, output) {
-                    continue;
-                }
-
-                if let Some(fromf) = from_frames[i].as_ref() {
-                    // Cheap mismatch scan. If any pixel differs, we need a transition.
-                    if fromf.iter().any(|&px| px != to_px) {
-                        needs = true;
-                        break;
-                    }
+            let needs = sel.iter().any(|&si| {
+                let s = &engine.surfaces[si];
+                if let Some(f) = s.last_frame.as_ref() {
+                    f.iter().any(|&px| px != to_px)
                 } else {
-                    let s = &engine.surfaces[i];
-                    if s.last_colour.xrgb8888() != to_px {
-                        needs = true;
-                        break;
-                    }
+                    s.last_colour.xrgb8888() != to_px
                 }
-            }
+            });
 
             if !needs {
                 el::info!("no-op transition");
-                for i in 0..engine.surfaces.len() {
-                    if surface_matches_output(engine, i, output) {
-                        let s = &mut engine.surfaces[i];
-                        s.last_colour = target;
-                        s.has_image = false;
-                    }
+                for &si in &sel {
+                    let s = &mut engine.surfaces[si];
+                    s.last_colour = target;
+                    s.has_image = false;
                 }
                 return Ok::<(), anyhow::Error>(());
             }
 
-            let qh = engine.qh.clone();
-            let start = Instant::now();
-            let mut frames: u32 = 0;
+            let from_frames = animations::capture_from_frames(engine, &sel);
 
-            // Render until duration elapsed.
-            // Pacing is compositor-driven via frame callbacks + buffer release in wayland::wait_for_free_buffer_idx.
-            loop {
-                let now = Instant::now();
-                let elapsed = now.saturating_duration_since(start);
-                if elapsed >= duration {
-                    break;
-                }
-
-                let raw = (elapsed.as_secs_f32() / duration.as_secs_f32()).min(1.0);
-                let t = ease_out_cubic(raw);
-                let tt = (t * 256.0).round() as u16; // monotonic 0..256
-
-                for i in 0..engine.surfaces.len() {
-                    if !wayland::surface_usable(engine, i) {
-                        continue;
-                    }
-                    if !surface_matches_output(engine, i, output) {
-                        continue;
-                    }
-
-                    let Some(fromf) = from_frames[i].as_ref() else { continue };
-
-                    // This call now does the *blocking cadence*:
-                    // - wait for free buffer (release)
-                    // - if callbacks work, also wait for frame_done
-                    wayland::wait_for_free_buffer_idx(engine, i)?;
-
-                    let s = &mut engine.surfaces[i];
-                    match kind {
-                        Transition::Wipe => paint_wipe_frame_to_solid_fast(s, fromf, to_px, tt, wipe_from),
-                        Transition::Fade => paint_blend_frame_to_solid_fast(s, fromf, to_px, tt),
-                        Transition::None => unreachable!(),
-                    }
-
-                    wayland::commit_surface(&qh, s, i);
-                }
-
-                engine._conn.flush().context("flush")?;
-                frames += 1;
-            }
-
-            // Finalize to exact target (one allocation per surface at end only).
-            for i in 0..engine.surfaces.len() {
-                if !wayland::surface_usable(engine, i) {
-                    continue;
-                }
-                if !surface_matches_output(engine, i, output) {
-                    continue;
-                }
-
-                wayland::wait_for_free_buffer_idx(engine, i)?;
-                let s = &mut engine.surfaces[i];
-
+            // Build solid TO frames (one allocation per unique size).
+            let mut to_frames: Vec<Option<Arc<[u32]>>> = vec![None; engine.surfaces.len()];
+            for &si in &sel {
+                let s = &engine.surfaces[si];
                 let w = s.width as usize;
                 let h = s.height as usize;
-                if w == 0 || h == 0 {
-                    continue;
+                if w > 0 && h > 0 {
+                    to_frames[si] = Some(vec![to_px; w * h].into());
                 }
+            }
 
-                let finalf: Arc<[u32]> = vec![to_px; w * h].into();
-                wayland::paint_frame_u32(s, &finalf);
-                wayland::commit_surface(&qh, s, i);
+            // Prime with the starting frame before handing off to the animator.
+            match kind {
+                Transition::Fade => {
+                    animations::present_blend_frame(engine, &sel, &from_frames, &to_frames, 0)?
+                }
+                Transition::Wipe => {
+                    animations::present_wipe_frame(engine, &sel, &from_frames, &to_frames, 0, wipe_from)?
+                }
+                Transition::None => unreachable!(),
+            }
+
+            let frames = animations::animate(engine, &sel, duration_ms, |eng, tt| match kind {
+                Transition::Fade => {
+                    animations::present_blend_frame(eng, &sel, &from_frames, &to_frames, tt)
+                }
+                Transition::Wipe => {
+                    animations::present_wipe_frame(eng, &sel, &from_frames, &to_frames, tt, wipe_from)
+                }
+                Transition::None => unreachable!(),
+            })?;
+
+            // Finalize exact target colour on all selected surfaces.
+            let qh = engine.qh.clone();
+            for &si in &sel {
+                let Some(finalf) = to_frames[si].as_ref() else {
+                    continue;
+                };
+
+                wayland::wait_for_free_buffer_idx(engine, si)?;
+                let s = &mut engine.surfaces[si];
+                wayland::paint_frame_u32(s, finalf);
+                wayland::commit_surface(&qh, s, si);
 
                 s.last_colour = target;
                 s.has_image = false;
-                s.last_frame = Some(finalf);
+                s.last_frame = Some(Arc::clone(finalf));
             }
 
             engine._conn.flush().context("flush")?;
-            // One dispatch at the end is OK (helps deliver final release/done quickly).
             let _ = engine.dispatch_pending();
 
             el::info!("done kind={kind} frames={frames}", kind = kind_name(kind), frames = frames);

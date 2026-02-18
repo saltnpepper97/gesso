@@ -1,6 +1,7 @@
 // Author: Dustin Pilgrim
 // License: MIT
 
+pub mod animations;
 pub mod cache;
 pub mod colour;
 pub mod image;

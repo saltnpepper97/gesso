@@ -1,5 +1,6 @@
 # Changelog
 All notable changes to this project are documented here.
+
 ## 0.3.0
 
 ### Improvements
@@ -11,6 +12,7 @@ All notable changes to this project are documented here.
   - Reduces steady-state RSS: ~113MB → ~87MB → ~73MB on typical dual-monitor setups
   - Reduced number of stored images in cache from top 5 to top 3
 - **Code organization**: Refactored daemon implementation into `daemon/` module (removed monolithic `daemon.rs`)
+- **refactor**: moved from having animations written in both `colour.rs` and `image.rs` to being in a single file, `animations.rs`
 
 ## 0.2.3
 - Add session alive check in NEW `session.rs` file which kills gesso daemon when wayland session is no longer alive.
