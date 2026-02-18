@@ -5,7 +5,6 @@ mod client;
 mod engine;
 mod utils;
 mod lock;
-mod logging;
 mod run;
 mod session;
 mod state;

@@ -13,7 +13,6 @@ use std::time::Duration;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use crate::logrotate::{self, LogPolicy};
 use crate::path::paths;
 use super::session;
 use crate::wallpaper::Engine;
@@ -21,7 +20,6 @@ use crate::wallpaper::Engine;
 use super::client::handle_client;
 use super::engine::build_engine;
 use super::lock::{lock_path, try_acquire_single_instance_lock};
-use super::logging::init_eventline;
 use super::state::load_current;
 
 pub fn run_daemon() -> Result<()> {
@@ -45,21 +43,29 @@ pub fn run_daemon() -> Result<()> {
     };
     // ─────────────────────────────────────────────────────────────────────────
 
-    // Rotate/prepare the SINGLE canonical log file *before* eventline opens it.
-    let had_existing = logrotate::prepare_log_file(&p.log_path, LogPolicy::default())
-        .with_context(|| format!("prepare_log_file: {}", p.log_path.display()))?;
+    // ─────────────────────────────────────────────────────────────────────────
+    // EVENTLINE INIT
+    // ─────────────────────────────────────────────────────────────────────────
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("build tokio runtime for eventline init")?
+        .block_on(async {
+            eventline::runtime::init().await;
+        });
 
-    // If the log already existed and wasn't rotated, insert ONE literal blank line
-    // between daemon runs. This is intentionally raw, not an eventline record.
-    if had_existing {
-        logrotate::write_raw_blank_line(&p.log_path)
-            .with_context(|| format!("write blank line: {}", p.log_path.display()))?;
-    }
+    eventline::runtime::enable_console_output(false);
+    eventline::runtime::enable_console_color(false);
+    eventline::runtime::enable_console_timestamp(false);
+    eventline::runtime::enable_console_duration(true);
+    eventline::runtime::set_log_level(eventline::runtime::LogLevel::Info);
 
-    init_eventline(&p.log_path)?;
+    let header = eventline::runtime::RunHeader::new("gesso daemon run start");
+    let policy = eventline::LogPolicy::default();
 
-    // Write a run header using eventline (eventline is the ONLY logging).
-    eventline::info!("{}", logrotate::run_header());
+    eventline::runtime::enable_file_output_rotating(&p.log_path, policy, Some(header))
+        .with_context(|| format!("enable_file_output_rotating: {}", p.log_path.display()))?;
+    // ─────────────────────────────────────────────────────────────────────────
 
     // Refuse to start outside an active Wayland session.
     if let Err(e) = session::ensure_wayland_alive() {

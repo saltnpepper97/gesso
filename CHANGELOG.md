@@ -13,6 +13,7 @@ All notable changes to this project are documented here.
   - Reduced number of stored images in cache from top 5 to top 3
 - **Code organization**: Refactored daemon implementation into `daemon/` module (removed monolithic `daemon.rs`)
 - **Code organization**: Extracted shared animation primitives (`animate`, `capture_from_frames`, `present_blend_frame`, `present_wipe_frame`) from `colour.rs` and `image.rs` into a new `animations.rs` module
+- **Log rotation**: Removed `logrotate.rs` and `daemon/logging.rs`; log rotation, run headers, and eventline init now handled directly by `eventline 0.7.0`
 
 ## 0.2.3
 - Add session alive check in NEW `session.rs` file which kills gesso daemon when wayland session is no longer alive.
