@@ -1,6 +1,11 @@
 # Changelog
 All notable changes to this project are documented here.
 
+## 0.3.1
+
+### Improvements
+- Fix(eventline): bump version to 0.7.2 with critical fixes which caps logging at 500 recent logs, curbing memory creep
+
 ## 0.3.0
 
 ### Improvements
