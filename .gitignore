@@ -1,0 +1,92 @@
+# =========================
+# Rust
+# =========================
+
+# Compiled artifacts
+/target/
+
+# Cargo lock:
+# Keep Cargo.lock for applications.
+# Ignore for libraries (uncomment the next line if this is a library crate).
+# Cargo.lock
+
+# Rustfmt backups
+**/*.rs.bk
+
+# =========================
+# Build / Debug
+# =========================
+
+debug/
+release/
+
+# =========================
+# Logs
+# =========================
+
+*.log
+
+# =========================
+# OS generated files
+# =========================
+
+.DS_Store
+Thumbs.db
+
+# =========================
+# Editor / IDE
+# =========================
+
+# VSCode
+.vscode/
+
+# JetBrains (CLion, IntelliJ, RustRover)
+.idea/
+*.iml
+
+# Vim
+*.swp
+*.swo
+
+# Emacs
+*~
+\#*\#
+
+# =========================
+# Wayland / runtime sockets (if applicable)
+# =========================
+
+*.sock
+*.lock
+
+# =========================
+# Coverage / profiling
+# =========================
+
+*.profraw
+*.profdata
+*.gcda
+*.gcno
+*.lcov
+
+# Tarballs / archives
+*.tar
+*.gz
+*.zip
+
+# =========================
+# Misc
+# =========================
+
+# dotenv files
+.env
+.env.*
+
+# Generated docs
+doc/
+
+# Bench outputs
+criterion/
+
+# Flamegraph output
+flamegraph.svg
