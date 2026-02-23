@@ -1,0 +1,12 @@
+[package]
+name = "gesso-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rustix = { version = "0.38", features = ["mm", "param"] }
+thiserror = "2.0.18"
+serde = { version = "1.0.228", features = ["derive"] }
+
+png = "0.18.1"
+jpeg-decoder = "0.3.2"

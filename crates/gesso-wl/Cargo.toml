@@ -1,0 +1,18 @@
+[package]
+name = "gesso-wl"
+version = "0.1.0"
+edition = "2024"
+
+[profile.dev.package.gesso-core]
+opt-level = 2
+
+[dependencies]
+thiserror = "2.0.18"
+eventline = { path = "../../../../libs/eventline/"  }
+rustix = { version = "1.1.4", features = ["mm", "param"] }
+wayland-client = "0.31.12"
+wayland-protocols = { version = "0.32.10", features = ["client", "unstable"] }
+wayland-protocols-wlr = { version = "0.3.10", features = ["client"] }
+
+memmap2 = "0.9.10"
+tempfile = "3.25.0"

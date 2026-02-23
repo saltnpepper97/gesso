@@ -1,0 +1,17 @@
+[package]
+name = "gessod"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gesso-core = { path = "../gesso-core" }
+gesso-ipc = { path = "../gesso-ipc"}
+gesso-wl = { path = "../gesso-wl" }
+
+anyhow = "1.0.102"
+eventline = { path = "../../../../libs/eventline/" }
+futures = "0.3.32"
+clap = { version = "4.5.60", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+tikv-jemallocator = "0.6.1"

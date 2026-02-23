@@ -1,0 +1,9 @@
+[workspace]
+members = [
+  "crates/gesso-core",
+  "crates/gesso-ipc",
+  "crates/gesso-wl",
+  "crates/gessod",
+  "crates/gesso",
+]
+resolver = "2"
