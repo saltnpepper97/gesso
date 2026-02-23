@@ -239,7 +239,7 @@ pub fn run(rx: mpsc::Receiver<ipc::Request>, tx: mpsc::Sender<ipc::Response>) ->
 
                         wl = WlBackend::connect()?;
                         wl.roundtrip()?;
-                        outputs = wait_for_named_outputs(&mut wl)?;
+                        let _ = wait_for_named_outputs(&mut wl)?;
                     }
                 }
 

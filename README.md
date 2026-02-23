@@ -1,3 +1,6 @@
+> [!NOTE]  
+> gessod on idle after setting wallpaper with same for both monitors with a 2k and a 1k monitor for me sits at <10mb or rss pss ram usage
+
 # gesso
 
 **Deterministic Wayland wallpaper daemon + CLI** with smooth transitions and low idle memory.

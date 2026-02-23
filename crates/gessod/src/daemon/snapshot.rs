@@ -60,15 +60,6 @@ pub fn snapshot_pixels_for_output(
     }
 }
 
-/// Back-compat: if older code imports `snapshot_for_output`, keep it working.
-/// (Some of your compiler output suggests this name existed previously.)
-pub fn snapshot_for_output(
-    out: &gesso_wl::OutputInfo,
-    prev: Option<&PersistedSet>,
-) -> Arc<Vec<u8>> {
-    snapshot_pixels_for_output(out, prev)
-}
-
 fn to_scale_mode(m: ipc::Mode) -> ScaleMode {
     match m {
         ipc::Mode::Fill => ScaleMode::Fill,

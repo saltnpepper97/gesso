@@ -81,9 +81,11 @@ impl OldSnapshot {
 }
 
 //
-// “Current” state (NO pixel ownership)
+// “Current” state (debug-only; NO pixel ownership)
 //
 
+#[cfg(debug_assertions)]
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 enum CurrentKind {
     Unset,
@@ -91,6 +93,7 @@ enum CurrentKind {
     Image { width: u32, height: u32, stride: usize },
 }
 
+#[cfg(debug_assertions)]
 impl CurrentKind {
     fn from_target(t: &Target) -> Self {
         match t {
@@ -165,6 +168,8 @@ struct OutputState {
     stride:  usize,
 
     // Lightweight “what is currently shown” metadata (no pixels).
+    // Debug-only so release builds stay warning-free and lean.
+    #[cfg(debug_assertions)]
     current: CurrentKind,
 
     // If set_now() is called, we hold pixels only until the next render,
@@ -181,7 +186,10 @@ impl OutputState {
             width,
             height,
             stride: width as usize * 4,
+
+            #[cfg(debug_assertions)]
             current: CurrentKind::Unset,
+
             pending: None,
             active: None,
         }
@@ -259,7 +267,12 @@ impl RenderEngine {
         // Drop any in-flight transition and any pending target.
         st.active = None;
         st.pending = Some(target);
-        st.current = CurrentKind::from_target(st.pending.as_ref().unwrap());
+
+        #[cfg(debug_assertions)]
+        {
+            st.current = CurrentKind::from_target(st.pending.as_ref().unwrap());
+        }
+
         Ok(())
     }
 
@@ -282,7 +295,12 @@ impl RenderEngine {
             // Behave like set_now.
             st.active = None;
             st.pending = Some(target);
-            st.current = CurrentKind::from_target(st.pending.as_ref().unwrap());
+
+            #[cfg(debug_assertions)]
+            {
+                st.current = CurrentKind::from_target(st.pending.as_ref().unwrap());
+            }
+
             return Ok(());
         }
 
@@ -295,7 +313,11 @@ impl RenderEngine {
         }
 
         st.pending = None;
-        st.current = CurrentKind::from_target(&target);
+
+        #[cfg(debug_assertions)]
+        {
+            st.current = CurrentKind::from_target(&target);
+        }
 
         st.active = Some(ActiveTransition {
             duration: Duration::from_millis(transition.duration_ms() as u64),
@@ -339,7 +361,11 @@ impl RenderEngine {
                     mem::pixels_cold(xrgb8888);
                 }
 
-                st.current = CurrentKind::from_target(&finished.to);
+                #[cfg(debug_assertions)]
+                {
+                    st.current = CurrentKind::from_target(&finished.to);
+                }
+
                 // `finished.to` is dropped here → no idle pixel cache.
                 return true;
             }
@@ -367,7 +393,11 @@ impl RenderEngine {
                 mem::pixels_cold(xrgb8888);
             }
 
-            st.current = CurrentKind::from_target(&pending);
+            #[cfg(debug_assertions)]
+            {
+                st.current = CurrentKind::from_target(&pending);
+            }
+
             // `pending` dropped here → no idle pixel cache.
             return true;
         }
