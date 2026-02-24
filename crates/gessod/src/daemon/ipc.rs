@@ -20,15 +20,28 @@ use crate::daemon::transitions::{
 };
 use crate::daemon::types::{PersistedSet, PersistedTarget, PersistedTransition};
 
+/// Remove a GIF player and immediately release its large buffers back to the OS.
+///
+/// Always use this instead of `gifs.remove()` directly.  Without the explicit
+/// `release()` call the RGBA canvas (~8 MB at 1080p) and the last rendered output
+/// frame (~8 MB) stay in jemalloc's dirty-page cache until the background thread's
+/// decay timer fires — which may never happen if the daemon stays busy.
+#[inline]
+fn remove_gif(gifs: &mut HashMap<String, GifPlayer>, name: &str) {
+    if let Some(mut p) = gifs.remove(name) {
+        p.release();
+    }
+}
+
 pub fn handle_request(
-    eng: &mut RenderEngine,
-    wl: &mut WlBackend,
-    outputs: &[gesso_wl::OutputInfo],
-    active: &mut HashSet<String>,
-    current: &mut HashMap<String, ipc::CurrentTarget>,
+    eng:      &mut RenderEngine,
+    wl:       &mut WlBackend,
+    outputs:  &[gesso_wl::OutputInfo],
+    active:   &mut HashSet<String>,
+    current:  &mut HashMap<String, ipc::CurrentTarget>,
     last_set: &mut HashMap<String, PersistedSet>,
-    gifs: &mut HashMap<String, GifPlayer>,
-    req: ipc::Request,
+    gifs:     &mut HashMap<String, GifPlayer>,
+    req:      ipc::Request,
     quitting: &mut bool,
 ) -> ipc::Response {
     scope!("gessod.ipc.handle", {
@@ -37,10 +50,10 @@ pub fn handle_request(
                 let mut list = outputs
                     .iter()
                     .map(|o| ipc::OutputInfo {
-                        name: o.name.clone(),
-                        width: o.width,
+                        name:   o.name.clone(),
+                        width:  o.width,
                         height: o.height,
-                        scale: o.scale,
+                        scale:  o.scale,
                     })
                     .collect::<Vec<_>>();
                 list.sort_by(|a, b| a.name.cmp(&b.name));
@@ -53,15 +66,19 @@ pub fn handle_request(
                     .map(|o| {
                         let cur = current.get(&o.name).cloned().unwrap_or(ipc::CurrentTarget::Unset);
                         let (mode, bg_colour, transition) = match last_set.get(&o.name) {
-                            Some(ps) => (ps.mode, ps.bg_colour, ipc_transition_from_persisted(&ps.transition)),
+                            Some(ps) => (
+                                ps.mode,
+                                ps.bg_colour,
+                                ipc_transition_from_persisted(&ps.transition),
+                            ),
                             None => (None, None, ipc::Transition::None),
                         };
                         ipc::OutputFullInfo {
-                            name: o.name.clone(),
-                            width: o.width,
-                            height: o.height,
-                            scale: o.scale,
-                            current: cur,
+                            name:       o.name.clone(),
+                            width:      o.width,
+                            height:     o.height,
+                            scale:      o.scale,
+                            current:    cur,
                             mode,
                             bg_colour,
                             transition,
@@ -75,21 +92,21 @@ pub fn handle_request(
             ipc::Request::Doctor => {
                 let health = wl.health();
                 let mut warnings = Vec::new();
-                if !health.has_compositor    { warnings.push("wl_compositor not found".to_string()); }
-                if !health.has_shm           { warnings.push("wl_shm not found".to_string()); }
-                if !health.has_layer_shell   { warnings.push("zwlr_layer_shell_v1 not found".to_string()); }
+                if !health.has_compositor         { warnings.push("wl_compositor not found".into()); }
+                if !health.has_shm                { warnings.push("wl_shm not found".into()); }
+                if !health.has_layer_shell        { warnings.push("zwlr_layer_shell_v1 not found".into()); }
                 if !health.has_xdg_output_manager {
-                    warnings.push("zxdg_output_manager_v1 not found (output names may be unavailable)".to_string());
+                    warnings.push("zxdg_output_manager_v1 not found (output names may be unavailable)".into());
                 }
-                if outputs.is_empty() { warnings.push("no wl_outputs detected".to_string()); }
+                if outputs.is_empty() { warnings.push("no wl_outputs detected".into()); }
 
                 ipc::Response::Doctor(ipc::DoctorReport {
-                    socket_ok: true,
-                    has_compositor: health.has_compositor,
-                    has_shm: health.has_shm,
-                    has_layer_shell: health.has_layer_shell,
+                    socket_ok:             true,
+                    has_compositor:        health.has_compositor,
+                    has_shm:               health.has_shm,
+                    has_layer_shell:       health.has_layer_shell,
                     has_xdg_output_manager: health.has_xdg_output_manager,
-                    shm_formats: health.shm_formats,
+                    shm_formats:           health.shm_formats,
                     warnings,
                 })
             }
@@ -100,12 +117,14 @@ pub fn handle_request(
             }
 
             ipc::Request::Restore => {
-                ipc::Response::Error { message: "internal: restore should be handled by run loop".into() }
+                ipc::Response::Error {
+                    message: "internal: restore should be handled by run loop".into(),
+                }
             }
 
             ipc::Request::Unset { outputs: sel } => {
                 let selected = match select_outputs(outputs, &sel) {
-                    Ok(v) => v,
+                    Ok(v)    => v,
                     Err(msg) => return ipc::Response::Error { message: msg },
                 };
                 if selected.is_empty() {
@@ -113,7 +132,8 @@ pub fn handle_request(
                 }
 
                 for name in selected {
-                    gifs.remove(&name);
+                    // !! Use remove_gif, not gifs.remove — releases canvas pages immediately.
+                    remove_gif(gifs, &name);
 
                     if let Some(outinfo) = outputs.iter().find(|o| o.name == name) {
                         for _ in 0..8 {
@@ -123,7 +143,7 @@ pub fn handle_request(
                             }) {
                                 Ok(true)  => break,
                                 Ok(false) => { let _ = wl.blocking_dispatch(); }
-                                Err(_e)   => break,
+                                Err(_)    => break,
                             }
                         }
                     }
@@ -139,7 +159,6 @@ pub fn handle_request(
                             transition: PersistedTransition::None,
                         },
                     );
-
                     let _ = wl.unset(&name);
                 }
 
@@ -149,7 +168,7 @@ pub fn handle_request(
 
             ipc::Request::Set(set) => {
                 let selected = match select_outputs(outputs, &set.outputs) {
-                    Ok(v) => v,
+                    Ok(v)    => v,
                     Err(msg) => return ipc::Response::Error { message: msg },
                 };
                 if selected.is_empty() {
@@ -166,7 +185,9 @@ pub fn handle_request(
 
                         for name in selected {
                             let Some(outinfo) = outputs.iter().find(|o| o.name == name) else { continue };
-                            gifs.remove(&name);
+
+                            // !! release() before the new target takes over.
+                            remove_gif(gifs, &name);
 
                             if matches!(tr_core, CoreTransition::None) {
                                 let _ = eng.set_now(&name, Target::Colour(col));
@@ -199,14 +220,13 @@ pub fn handle_request(
 
                     ipc::SetTarget::ImagePath(ref path) => {
                         let Some(resolved) = resolve_image_path(path) else {
-                            return ipc::Response::Error { message: format!("image not found: {path}") };
+                            return ipc::Response::Error {
+                                message: format!("image not found: {path}"),
+                            };
                         };
 
                         let canonical = resolved.to_string_lossy().into_owned();
 
-                        // Decode once per output so AnimDecoded is always owned (no Clone needed).
-                        // In practice selected is almost always a single output; the re-decode
-                        // cost for multi-monitor is negligible compared to the I/O already done.
                         for name in selected {
                             let Some(outinfo) = outputs.iter().find(|o| o.name == name) else { continue };
 
@@ -223,9 +243,16 @@ pub fn handle_request(
 
                             match decoded {
                                 Decoded::Still(img) => {
-                                    gifs.remove(&name);
+                                    // !! release() before we show the new still.
+                                    remove_gif(gifs, &name);
 
-                                    let pixels = scale_image(&img, outinfo.width, outinfo.height, scale, bg_col);
+                                    let pixels = scale_image(
+                                        &img,
+                                        outinfo.width,
+                                        outinfo.height,
+                                        scale,
+                                        bg_col,
+                                    );
                                     let target = Target::image(
                                         outinfo.width,
                                         outinfo.height,
@@ -259,9 +286,11 @@ pub fn handle_request(
                                 }
 
                                 Decoded::Animated(anim) => {
-                                    gifs.remove(&name);
+                                    // !! release() the OLD player before installing the new one.
+                                    // This is the critical path: GIF → GIF replacement also
+                                    // needs the old canvas released.
+                                    remove_gif(gifs, &name);
 
-                                    // Show first frame immediately, with transition if requested.
                                     let pixels = scale_image(
                                         &anim.first_frame,
                                         outinfo.width,
@@ -291,7 +320,7 @@ pub fn handle_request(
                                     let loop_count = anim.loop_count;
                                     let now = Instant::now();
                                     match GifPlayer::new(
-                                        anim, // moved, no clone needed
+                                        anim,
                                         outinfo.width,
                                         outinfo.height,
                                         scale,
@@ -350,7 +379,7 @@ pub fn to_scale_mode(m: ipc::Mode) -> ScaleMode {
 
 pub fn select_outputs(
     outputs: &[gesso_wl::OutputInfo],
-    sel: &ipc::OutputSel,
+    sel:     &ipc::OutputSel,
 ) -> Result<Vec<String>, String> {
     match sel {
         ipc::OutputSel::All => Ok(outputs.iter().map(|o| o.name.clone()).collect()),

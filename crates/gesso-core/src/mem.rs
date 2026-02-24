@@ -1,135 +1,190 @@
-/// Memory pressure helpers.
+/// Memory pressure helpers for large pixel buffers.
 ///
-/// These are all best-effort — the kernel is free to ignore any of these hints.
-/// They never corrupt data; they only affect RSS and swap behaviour.
+/// All functions are best-effort: on non-Linux or unsupported arches they compile
+/// to no-ops so the rest of the codebase doesn't need cfg guards.
+
+// ── mmap / MADV hints ────────────────────────────────────────────────────────
+
+/// Tell the kernel it can immediately reclaim the physical pages backing `buf`.
 ///
-/// Uses `rustix` for all syscall wrappers instead of `libc`:
-///   - no unsafe at call sites
-///   - no glibc PLT indirection
-///   - keeps `libc` out of the core crate's dependency tree entirely
+/// Uses `MADV_DONTNEED` so pages are zeroed on next access.  Call this on large
+/// buffers (canvas, pixel frames) **before** dropping them so jemalloc returns
+/// physical pages to the OS promptly instead of sitting in its dirty/muzzy cache.
 ///
-/// # Usage pattern
-///
-/// Call `pixels_cold` immediately after a frame is committed to the Wayland
-/// compositor. The compositor now owns the pixels in SHM; our copy of the
-/// target pixels is only needed if a *new* transition fires (to serve as the
-/// "old" snapshot). Marking them cold lets the kernel page them out under
-/// memory pressure while keeping the virtual address range valid.
-///
-/// Call `pixels_free` on the OLD snapshot Vec<u8> as soon as a transition
-/// finishes (inside RenderEngine when it drops the old frame). This signals
-/// that the pages are immediately reclaimable without a swap write.
-///
-/// `heap_trim` has been removed. It only existed to compensate for glibc's
-/// arena-hoarding behaviour. Use `mimalloc` as the global allocator instead —
-/// it returns freed pages to the OS automatically, making an explicit trim
-/// call unnecessary. Add to the daemon's main.rs:
-///
-/// ```rust
-/// #[global_allocator]
-/// static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-/// ```
-///
-/// and to Cargo.toml:
-///
-/// ```toml
-/// mimalloc = { version = "0.1", default-features = false }
-/// ```
+/// This is the key call when tearing down a GIF player: without it jemalloc may
+/// hold ~16 MB of dirty pages for up to `dirty_decay_ms` milliseconds.
+#[inline]
+pub fn pages_dontneed(buf: &[u8]) {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        const MADV_DONTNEED: i32 = 9;
+
+        #[cfg(target_arch = "x86_64")]
+        const SYS_MADVISE: usize = 28;
+        #[cfg(target_arch = "aarch64")]
+        const SYS_MADVISE: usize = 233;
+
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+        {
+            // Round inward to page boundaries so we never advise a partial page.
+            let page = page_size();
+            let addr  = buf.as_ptr() as usize;
+            let start = (addr + page - 1) & !(page - 1);
+            let end   = (addr + buf.len()) & !(page - 1);
+
+            if end <= start { return; }
+
+            let len = end - start;
+
+            // Raw syscall — avoids a libc/rustix dependency in gesso-core.
+            #[cfg(target_arch = "x86_64")]
+            {
+                let mut ret: isize;
+                core::arch::asm!(
+                    "syscall",
+                    inlateout("rax") SYS_MADVISE as isize => ret,
+                    in("rdi") start,
+                    in("rsi") len,
+                    in("rdx") MADV_DONTNEED as isize,
+                    lateout("rcx") _,
+                    lateout("r11") _,
+                    options(nostack, preserves_flags),
+                );
+                let _ = ret;
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                let mut ret: isize;
+                core::arch::asm!(
+                    "svc #0",
+                    inlateout("x8") SYS_MADVISE as isize => _,
+                    inlateout("x0") start           => ret,
+                    in("x1") len,
+                    in("x2") MADV_DONTNEED as isize,
+                    options(nostack, preserves_flags),
+                );
+                let _ = ret;
+            }
+        }
+
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        let _ = buf;
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    let _ = buf;
+}
+
+// ── Existing sequential / cold / free hints ──────────────────────────────────
+
+/// Hint that we are about to do a full sequential scan of this pixel buffer.
+#[inline]
+pub fn pixels_sequential(buf: &[u8]) {
+    #[cfg(target_os = "linux")]
+    madvise_linux(buf, 2 /* MADV_SEQUENTIAL */);
+    #[cfg(not(target_os = "linux"))]
+    let _ = buf;
+}
+
+/// Hint that we will not access this pixel buffer again soon.
+#[inline]
+pub fn pixels_cold(buf: &[u8]) {
+    #[cfg(target_os = "linux")]
+    madvise_linux(buf, 4 /* MADV_DONTNEED — reclaim pages */);
+    #[cfg(not(target_os = "linux"))]
+    let _ = buf;
+}
+
+/// Same as `pixels_cold`; name kept for call-site readability.
+#[inline]
+pub fn pixels_free(buf: &[u8]) {
+    pixels_cold(buf);
+}
+
+// ── Internal helpers ─────────────────────────────────────────────────────────
 
 #[cfg(target_os = "linux")]
-mod inner {
-    use rustix::mm::{Advice, madvise};
-    use rustix::param::page_size;
+#[inline(always)]
+fn page_size() -> usize {
+    // getpagesize / sysconf(_SC_PAGESIZE) — cache result at program start if needed,
+    // but for a wallpaper daemon one syscall on teardown is negligible.
+    #[cfg(target_arch = "x86_64")]
+    const SYS_GETPAGESIZE: usize = 12;
+    #[cfg(target_arch = "aarch64")]
+    const SYS_GETPAGESIZE: usize = 29;
 
-    /// Page-align `data` and call madvise with the given advice.
-    /// Silently does nothing if the region is smaller than one page.
-    #[inline]
-    fn madvise_range(data: &[u8], advice: Advice) {
-        if data.is_empty() {
-            return;
-        }
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    unsafe {
+        let mut ret: usize;
+        #[cfg(target_arch = "x86_64")]
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") SYS_GETPAGESIZE => ret,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack, preserves_flags),
+        );
+        #[cfg(target_arch = "aarch64")]
+        core::arch::asm!(
+            "svc #0",
+            inlateout("x8") SYS_GETPAGESIZE => _,
+            inlateout("x0") 0usize => ret,
+            options(nostack, preserves_flags),
+        );
+        if ret == 0 { 4096 } else { ret }
+    }
 
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    4096
+}
+
+#[cfg(target_os = "linux")]
+#[inline]
+fn madvise_linux(buf: &[u8], advice: i32) {
+    #[cfg(target_arch = "x86_64")]
+    const SYS_MADVISE: usize = 28;
+    #[cfg(target_arch = "aarch64")]
+    const SYS_MADVISE: usize = 233;
+
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    unsafe {
         let page  = page_size();
-        let addr  = data.as_ptr() as usize;
-
-        // Round start UP to the next page boundary.
+        let addr  = buf.as_ptr() as usize;
         let start = (addr + page - 1) & !(page - 1);
-        // Round end DOWN to a page boundary.
-        let end   = (addr + data.len()) & !(page - 1);
+        let end   = (addr + buf.len()) & !(page - 1);
+        if end <= start { return; }
+        let len = end - start;
 
-        if end <= start {
-            return; // region spans less than one full page
+        #[cfg(target_arch = "x86_64")]
+        {
+            let mut ret: isize;
+            core::arch::asm!(
+                "syscall",
+                inlateout("rax") SYS_MADVISE as isize => ret,
+                in("rdi") start,
+                in("rsi") len,
+                in("rdx") advice as isize,
+                lateout("rcx") _,
+                lateout("r11") _,
+                options(nostack, preserves_flags),
+            );
+            let _ = ret;
         }
-
-        // SAFETY: pointer is page-aligned and within our allocation.
-        // madvise is advisory only — it cannot corrupt data.
-        let _ = unsafe {
-            madvise(
-                start as *mut std::ffi::c_void,
-                end - start,
-                advice,
-            )
-        };
+        #[cfg(target_arch = "aarch64")]
+        {
+            let mut ret: isize;
+            core::arch::asm!(
+                "svc #0",
+                inlateout("x8") SYS_MADVISE as isize => _,
+                inlateout("x0") start => ret,
+                in("x1") len,
+                in("x2") advice as isize,
+                options(nostack, preserves_flags),
+            );
+            let _ = ret;
+        }
     }
 
-    /// Mark pixel data as cold after it has been committed to the compositor.
-    ///
-    /// MADV_COLD (Linux 5.4+): pages stay mapped but are moved to the tail of
-    /// the LRU and evicted first under memory pressure. Content remains valid —
-    /// a page fault brings them back silently.
-    #[inline]
-    pub fn pixels_cold(pixels: &[u8]) {
-        madvise_range(pixels, Advice::LinuxCold);
-    }
-
-    /// Mark a buffer as immediately reclaimable before dropping it.
-    ///
-    /// MADV_FREE (Linux 4.5+): pages may be reclaimed without a swap write;
-    /// content is undefined after this call — do not read afterwards. If the
-    /// kernel hasn't reclaimed them by the time we write new data, they are
-    /// reused at zero cost.
-    #[inline]
-    pub fn pixels_free(pixels: &[u8]) {
-        madvise_range(pixels, Advice::LinuxFree);
-    }
-
-    /// Hint sequential access pattern before a decode/scale pass.
-    ///
-    /// MADV_SEQUENTIAL: kernel increases read-ahead on the range.
-    #[inline]
-    pub fn pixels_sequential(pixels: &[u8]) {
-        madvise_range(pixels, Advice::Sequential);
-    }
-}
-
-// ── public API ───────────────────────────────────────────────────────────────
-
-/// Mark pixel buffer as cold after committing to the compositor.
-/// No-op on non-Linux targets.
-#[inline]
-pub fn pixels_cold(pixels: &[u8]) {
-    #[cfg(target_os = "linux")]
-    inner::pixels_cold(pixels);
-    #[cfg(not(target_os = "linux"))]
-    let _ = pixels;
-}
-
-/// Mark a buffer as immediately reclaimable before dropping it.
-/// No-op on non-Linux targets.
-#[inline]
-pub fn pixels_free(pixels: &[u8]) {
-    #[cfg(target_os = "linux")]
-    inner::pixels_free(pixels);
-    #[cfg(not(target_os = "linux"))]
-    let _ = pixels;
-}
-
-/// Hint sequential access before a decode/scale pass.
-/// No-op on non-Linux targets.
-#[inline]
-pub fn pixels_sequential(pixels: &[u8]) {
-    #[cfg(target_os = "linux")]
-    inner::pixels_sequential(pixels);
-    #[cfg(not(target_os = "linux"))]
-    let _ = pixels;
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    let _ = (buf, advice);
 }

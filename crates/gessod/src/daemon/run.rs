@@ -15,35 +15,14 @@ use crate::daemon::restore::apply_persisted_state;
 use crate::daemon::types::PersistedSet;
 use crate::daemon::wayland::{wayland_socket_alive, wayland_socket_path};
 
-#[cfg(target_os = "linux")]
-fn memory_pressure_pulse() {
-    const PULSE_MIB: usize = 24;
-    const PAGE: usize = 4096;
-
-    let mut v = vec![0u8; PULSE_MIB * 1024 * 1024];
-
-    for i in (0..v.len()).step_by(PAGE) {
-        unsafe {
-            core::ptr::write_volatile(v.as_mut_ptr().add(i), 1);
-        }
-    }
-
-    drop(v);
-}
-
-#[cfg(not(target_os = "linux"))]
-fn memory_pressure_pulse() {}
-
 /// Wait (briefly) for compositor-provided output names (DP-1 / HDMI-A-1).
 fn wait_for_named_outputs(wl: &mut WlBackend) -> anyhow::Result<Vec<gesso_wl::OutputInfo>> {
     let mut outs = wl.outputs();
     if !outs.is_empty() {
         return Ok(outs);
     }
-
     let start   = Instant::now();
     let timeout = Duration::from_millis(1500);
-
     while start.elapsed() < timeout {
         let _ = wl.blocking_dispatch();
         outs = wl.outputs();
@@ -51,8 +30,19 @@ fn wait_for_named_outputs(wl: &mut WlBackend) -> anyhow::Result<Vec<gesso_wl::Ou
             return Ok(outs);
         }
     }
-
     Ok(outs)
+}
+
+/// Remove a GIF player from the map, releasing its large buffers immediately.
+///
+/// Always use this helper instead of `gifs.remove()` directly so the canvas and
+/// output frame receive MADV_DONTNEED before jemalloc reclaims the virtual range.
+#[inline]
+fn remove_gif(gifs: &mut HashMap<String, GifPlayer>, name: &str) {
+    if let Some(mut p) = gifs.remove(name) {
+        p.release();
+        // `p` is dropped here — jemalloc frees the now-DONTNEED'd ranges.
+    }
 }
 
 pub fn run(rx: mpsc::Receiver<ipc::Request>, tx: mpsc::Sender<ipc::Response>) -> anyhow::Result<()> {
@@ -73,7 +63,7 @@ pub fn run(rx: mpsc::Receiver<ipc::Request>, tx: mpsc::Sender<ipc::Response>) ->
         let mut outputs = wait_for_named_outputs(&mut wl)?;
         if outputs.is_empty() {
             eventline::warn!(
-                "no named outputs yet (DP-1/HDMI-A-1). `gesso doctor` may show missing xdg-output manager."
+                "no named outputs yet. `gesso doctor` may show missing xdg-output manager."
             );
         }
 
@@ -82,10 +72,10 @@ pub fn run(rx: mpsc::Receiver<ipc::Request>, tx: mpsc::Sender<ipc::Response>) ->
             eng.register_output(&o.name, o.width, o.height);
         }
 
-        let mut active:   HashSet<String>               = HashSet::new();
+        let mut active:   HashSet<String>                     = HashSet::new();
         let mut current:  HashMap<String, ipc::CurrentTarget> = HashMap::new();
-        let mut last_set: HashMap<String, PersistedSet> = HashMap::new();
-        let mut gifs:     HashMap<String, GifPlayer>    = HashMap::new();
+        let mut last_set: HashMap<String, PersistedSet>        = HashMap::new();
+        let mut gifs:     HashMap<String, GifPlayer>           = HashMap::new();
 
         for o in &outputs {
             current.insert(o.name.clone(), ipc::CurrentTarget::Unset);
@@ -94,20 +84,12 @@ pub fn run(rx: mpsc::Receiver<ipc::Request>, tx: mpsc::Sender<ipc::Response>) ->
         if let Ok(Some(persist)) = load_state() {
             info!("restoring persisted state");
             apply_persisted_state(
-                &mut eng,
-                &mut active,
-                &mut current,
-                &mut last_set,
-                &mut gifs,
-                &outputs,
-                persist,
+                &mut eng, &mut active, &mut current, &mut last_set, &mut gifs,
+                &outputs, persist,
             )?;
         }
 
-        let mut quitting  = false;
-        let mut was_busy  = false;
-        let mut last_pulse = Instant::now() - Duration::from_secs(60);
-        const PULSE_COOLDOWN: Duration = Duration::from_millis(800);
+        let mut quitting = false;
 
         loop {
             if !wayland_socket_alive(&wl_sock) {
@@ -126,12 +108,10 @@ pub fn run(rx: mpsc::Receiver<ipc::Request>, tx: mpsc::Sender<ipc::Response>) ->
 
                 wl = WlBackend::connect()?;
                 wl.roundtrip()?;
-
                 outputs = wait_for_named_outputs(&mut wl)?;
                 if outputs.is_empty() {
-                    eventline::warn!("reconnected but still no named outputs (DP-1/HDMI-A-1).");
+                    eventline::warn!("reconnected but still no named outputs.");
                 }
-
                 for o in &outputs {
                     eng.register_output(&o.name, o.width, o.height);
                     current.entry(o.name.clone()).or_insert(ipc::CurrentTarget::Unset);
@@ -141,7 +121,6 @@ pub fn run(rx: mpsc::Receiver<ipc::Request>, tx: mpsc::Sender<ipc::Response>) ->
                 if outputs.is_empty() {
                     outputs = wait_for_named_outputs(&mut wl)?;
                 }
-
                 for o in &outputs {
                     eng.register_output(&o.name, o.width, o.height);
                     current.entry(o.name.clone()).or_insert(ipc::CurrentTarget::Unset);
@@ -149,22 +128,13 @@ pub fn run(rx: mpsc::Receiver<ipc::Request>, tx: mpsc::Sender<ipc::Response>) ->
             }
 
             // ── Tick animation players ────────────────────────────────────────
-            //
-            // Skip outputs that are still mid-transition so frames don't race
-            // ahead of the intro animation. The player's deadline is left alone —
-            // it was set correctly at install time and will fire naturally once
-            // the transition finishes.
             {
                 let now = Instant::now();
                 let mut finished: Vec<String> = Vec::new();
 
                 for o in &outputs {
-                    if !active.contains(&o.name) {
-                        continue;
-                    }
-                    if eng.is_transitioning(&o.name) {
-                        continue;
-                    }
+                    if !active.contains(&o.name)     { continue; }
+                    if eng.is_transitioning(&o.name) { continue; }
                     if let Some(p) = gifs.get_mut(&o.name) {
                         if p.tick(now, &mut eng, &o.name).is_err() {
                             finished.push(o.name.clone());
@@ -172,8 +142,9 @@ pub fn run(rx: mpsc::Receiver<ipc::Request>, tx: mpsc::Sender<ipc::Response>) ->
                     }
                 }
 
+                // Use remove_gif so canvas + frame memory is released immediately.
                 for name in finished {
-                    gifs.remove(&name);
+                    remove_gif(&mut gifs, &name);
                 }
             }
 
@@ -193,9 +164,7 @@ pub fn run(rx: mpsc::Receiver<ipc::Request>, tx: mpsc::Sender<ipc::Response>) ->
                 let _ = tx.send(resp);
             }
 
-            if quitting {
-                break;
-            }
+            if quitting { break; }
 
             // ── Present ───────────────────────────────────────────────────────
             let any_needs_present = outputs
@@ -204,23 +173,17 @@ pub fn run(rx: mpsc::Receiver<ipc::Request>, tx: mpsc::Sender<ipc::Response>) ->
                 .any(|o| eng.needs_present(&o.name));
 
             if any_needs_present {
-                was_busy = true;
-
                 let mut any_presented = false;
 
                 for o in &outputs {
                     if !active.contains(&o.name) || !eng.needs_present(&o.name) {
                         continue;
                     }
-
                     let presented = wl.present_rendered(&o.name, o.width, o.height, |dst| {
                         eng.render_output_into(&o.name, dst);
                         Ok(())
                     })?;
-
-                    if presented {
-                        any_presented = true;
-                    }
+                    if presented { any_presented = true; }
                 }
 
                 for o in &outputs {
@@ -232,12 +195,10 @@ pub fn run(rx: mpsc::Receiver<ipc::Request>, tx: mpsc::Sender<ipc::Response>) ->
                 if !any_presented {
                     if let Err(e) = wl.blocking_dispatch() {
                         eventline::warn!("wl.blocking_dispatch failed: {e:#}; reconnecting");
-
                         if !wayland_socket_alive(&wl_sock) {
                             info!("wayland socket vanished ({}); exiting gessod", wl_sock.display());
                             break;
                         }
-
                         wl = WlBackend::connect()?;
                         wl.roundtrip()?;
                         let _ = wait_for_named_outputs(&mut wl)?;
@@ -254,25 +215,14 @@ pub fn run(rx: mpsc::Receiver<ipc::Request>, tx: mpsc::Sender<ipc::Response>) ->
                 }
             }
 
-            if was_busy && last_pulse.elapsed() >= PULSE_COOLDOWN {
-                memory_pressure_pulse();
-                last_pulse = Instant::now();
-            }
-            was_busy = false;
-
-            // Sleep until next IPC or next animation deadline.
-            let now     = Instant::now();
+            // Sleep until next IPC or animation deadline.
+            let now = Instant::now();
             let mut timeout = Duration::from_millis(250);
-
             for o in &outputs {
-                if !active.contains(&o.name) {
-                    continue;
-                }
+                if !active.contains(&o.name) { continue; }
                 if let Some(p) = gifs.get(&o.name) {
                     let dt = p.next_deadline().saturating_duration_since(now);
-                    if dt < timeout {
-                        timeout = dt;
-                    }
+                    if dt < timeout { timeout = dt; }
                 }
             }
 
@@ -290,7 +240,6 @@ pub fn run(rx: mpsc::Receiver<ipc::Request>, tx: mpsc::Sender<ipc::Response>) ->
                         ),
                     };
                     let _ = tx.send(resp);
-                    was_busy = true;
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if !wayland_socket_alive(&wl_sock) {
@@ -305,8 +254,6 @@ pub fn run(rx: mpsc::Receiver<ipc::Request>, tx: mpsc::Sender<ipc::Response>) ->
         Ok(())
     })
 }
-
-// ── Helper: handle Restore in one place ──────────────────────────────────────
 
 fn handle_restore(
     eng:      &mut RenderEngine,
