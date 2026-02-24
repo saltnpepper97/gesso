@@ -53,10 +53,6 @@ fn main() -> anyhow::Result<()> {
             from,
             output,
         } => {
-            // Resolve the path so relative paths (./foo.png, ../bar.gif, ~-less paths)
-            // are expanded to an absolute path before being sent to the daemon.
-            // The daemon runs in a different working directory so relative paths
-            // would be meaningless by the time it tries to open the file.
             let resolved = resolve_image_path(&target)?;
 
             let bg       = colour.map(|c| parse_rgb(&c)).transpose()?;
@@ -81,22 +77,25 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Resolve an image path supplied by the user to an absolute path string.
+/// Resolve an image path to send to the daemon.
 ///
-/// Handles:
-/// - `./foo.png`          relative to cwd
-/// - `../images/foo.png`  relative to cwd
-/// - `foo.png`            bare filename, relative to cwd
-/// - `/absolute/foo.png`  already absolute — returned as-is after existence check
+/// Three cases:
 ///
-/// Uses `std::fs::canonicalize` when the path exists (resolves symlinks too).
-/// Falls back to `std::env::current_dir().join(path)` when the file cannot be
-/// found yet (lets the daemon give a cleaner "file not found" error rather than
-/// us failing here with a cryptic canonicalize error).
+/// - Already absolute (`/home/user/foo.png`) — canonicalize to resolve symlinks
+///   and `..`, then send. Daemon receives a clean absolute path.
+///
+/// - Explicitly relative (`./foo.png`, `../images/foo.png`) — join with cwd and
+///   canonicalize. The daemon runs in a different working directory so relative
+///   paths are meaningless to it; we must expand them here.
+///
+/// - Bare name (`wallpaper.png`, `summer/beach.jpg`) — return unchanged. The
+///   daemon's `resolve_image_path` in persist.rs will search `GESSO_DIRS` for
+///   these. If we expanded them here we'd send `/cwd/wallpaper.png` and the
+///   GESSO_DIRS search would never run.
 fn resolve_image_path(raw: &str) -> anyhow::Result<String> {
     let p = std::path::Path::new(raw);
 
-    // Already absolute — canonicalize to resolve any symlinks/..
+    // Case 1: already absolute.
     if p.is_absolute() {
         return match std::fs::canonicalize(p) {
             Ok(c)  => Ok(c.to_string_lossy().into_owned()),
@@ -104,18 +103,23 @@ fn resolve_image_path(raw: &str) -> anyhow::Result<String> {
         };
     }
 
-    // Relative path — make it absolute via cwd first, then canonicalize.
-    let cwd = std::env::current_dir()
-        .map_err(|e| anyhow::anyhow!("cannot determine current directory: {e}"))?;
-    let abs = cwd.join(p);
+    // Case 2: explicitly relative — starts with ./ or ../
+    // Note: "." and ".." on their own are also explicitly relative.
+    let explicitly_relative = raw.starts_with("./")
+        || raw.starts_with("../")
+        || raw == "."
+        || raw == "..";
 
-    match std::fs::canonicalize(&abs) {
-        Ok(c)  => Ok(c.to_string_lossy().into_owned()),
-        Err(_) => {
-            // canonicalize fails if the file doesn't exist.
-            // Return the manually-constructed absolute path so the daemon can
-            // produce a proper "file not found" message.
-            Ok(abs.to_string_lossy().into_owned())
-        }
+    if explicitly_relative {
+        let cwd = std::env::current_dir()
+            .map_err(|e| anyhow::anyhow!("cannot determine current directory: {e}"))?;
+        let abs = cwd.join(p);
+        return match std::fs::canonicalize(&abs) {
+            Ok(c)  => Ok(c.to_string_lossy().into_owned()),
+            Err(_) => Ok(abs.to_string_lossy().into_owned()), // let daemon error
+        };
     }
+
+    // Case 3: bare name — leave alone for daemon GESSO_DIRS search.
+    Ok(raw.to_owned())
 }

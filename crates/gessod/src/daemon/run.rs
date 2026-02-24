@@ -33,18 +33,6 @@ fn wait_for_named_outputs(wl: &mut WlBackend) -> anyhow::Result<Vec<gesso_wl::Ou
     Ok(outs)
 }
 
-/// Remove a GIF player from the map, releasing its large buffers immediately.
-///
-/// Always use this helper instead of `gifs.remove()` directly so the canvas and
-/// output frame receive MADV_DONTNEED before jemalloc reclaims the virtual range.
-#[inline]
-fn remove_gif(gifs: &mut HashMap<String, GifPlayer>, name: &str) {
-    if let Some(mut p) = gifs.remove(name) {
-        p.release();
-        // `p` is dropped here — jemalloc frees the now-DONTNEED'd ranges.
-    }
-}
-
 pub fn run(rx: mpsc::Receiver<ipc::Request>, tx: mpsc::Sender<ipc::Response>) -> anyhow::Result<()> {
     scope!("gessod.run", {
         info!("starting gessod");
@@ -142,9 +130,8 @@ pub fn run(rx: mpsc::Receiver<ipc::Request>, tx: mpsc::Sender<ipc::Response>) ->
                     }
                 }
 
-                // Use remove_gif so canvas + frame memory is released immediately.
                 for name in finished {
-                    remove_gif(&mut gifs, &name);
+                    gifs.remove(&name);
                 }
             }
 
