@@ -103,7 +103,6 @@ fn try_animated(data: &[u8]) -> Result<Option<WebpAnimation>, String> {
         let pixels = match frame.get_layout() {
             webp::PixelLayout::Rgba => rgba8_to_xrgb(img),
             webp::PixelLayout::Rgb  => rgb8_to_xrgb(img),
-            other => return Err(format!("libwebp: unsupported animated pixel layout: {other:?}")),
         };
 
         // Sanity: after conversion we must be XRGB8888.

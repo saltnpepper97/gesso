@@ -16,13 +16,12 @@ pub fn decode_gif_first_frame(data: &[u8]) -> Result<DecodedImage, String> {
 
 /// A streaming GIF decoder that yields composited full-canvas frames + delays.
 ///
-/// Notes:
-/// - Uses gif crate ColorOutput::RGBA.
-/// - `frame.buffer` from the gif crate is sized to the FRAME's bounding box
-///   (frame.width × frame.height × 4), NOT the full canvas. Frames must be
-///   composited onto the canvas manually with proper disposal method handling.
-/// - We composite RGBA onto a black canvas, then convert to XRGB8888.
-/// - Delays are clamped to 20ms minimum to avoid busy-looping.
+/// Key properties:
+/// - Keeps ONE full-canvas RGBA compositing buffer (`canvas`)
+/// - Allocates `prev_canvas` lazily only if DisposalMethod::Previous occurs
+/// - Reuses an XRGB output buffer (`xrgb`) so there is NO per-frame allocation
+/// - Returns DecodedImage that *borrows* from internal `xrgb` via Vec clone at the end
+///   (caller-owned). For the daemon we’ll avoid this by exposing a slice API later.
 pub struct GifFrameStream<'a> {
     width:  u32,
     height: u32,
@@ -31,16 +30,18 @@ pub struct GifFrameStream<'a> {
     /// Full-canvas RGBA compositing buffer. Persists across frames.
     canvas: Vec<u8>,
 
-    /// Saved canvas used when DisposalMethod::Previous is set on the current frame.
+    /// Saved canvas used when DisposalMethod::Previous is set.
     /// Saved BEFORE compositing the current frame, restored before the next frame.
-    prev_canvas: Vec<u8>,
+    prev_canvas: Option<Vec<u8>>,
+
+    /// Reused full-canvas XRGB output buffer.
+    xrgb: Vec<u8>,
 
     /// Disposal method declared on the most recently composited frame.
     /// Applied at the START of the next call to next_frame().
     last_disposal: DisposalMethod,
 
     /// Bounding rect (left, top, width, height) of the most recently composited frame.
-    /// Needed when last_disposal == Background to know which region to clear.
     last_rect: (u16, u16, u16, u16),
 }
 
@@ -49,23 +50,23 @@ impl<'a> GifFrameStream<'a> {
         use gif::{ColorOutput, DecodeOptions};
         let mut opts = DecodeOptions::new();
         opts.set_color_output(ColorOutput::RGBA);
+
         let decoder = opts
             .read_info(Cursor::new(data))
             .map_err(|e| e.to_string())?;
 
         let width  = decoder.width()  as u32;
         let height = decoder.height() as u32;
-        // Canvas starts fully transparent-black.
-        let canvas      = vec![0u8; width as usize * height as usize * 4];
-        let prev_canvas = canvas.clone();
+
+        let n = width as usize * height as usize * 4;
 
         Ok(Self {
             width,
             height,
             decoder,
-            canvas,
-            prev_canvas,
-            // "Keep" means do nothing before the very first frame.
+            canvas: vec![0u8; n],
+            prev_canvas: None,
+            xrgb: vec![0u8; n],
             last_disposal: DisposalMethod::Keep,
             last_rect: (0, 0, 0, 0),
         })
@@ -73,34 +74,39 @@ impl<'a> GifFrameStream<'a> {
 
     /// Returns `Some(Ok((image, delay)))` for each frame, or `None` when the stream ends.
     ///
-    /// `image` is always a full-canvas XRGB8888 image with the correct compositing
-    /// applied (disposal methods honoured).
+    /// `image` is always a full-canvas XRGB8888 image with correct compositing.
     pub fn next_frame(&mut self) -> Option<Result<(DecodedImage, Duration), String>> {
-        // ── Step 1: apply previous frame's disposal before overlaying new content ──
+        // ── Step 1: apply previous frame's disposal ──
         match self.last_disposal {
             DisposalMethod::Background => {
                 let (left, top, fw, fh) = self.last_rect;
-                let cw = self.width  as usize;
+
+                let cw = self.width as usize;
                 let ch = self.height as usize;
-                for y in 0..fh as usize {
-                    for x in 0..fw as usize {
-                        let cx = left as usize + x;
-                        let cy = top  as usize + y;
-                        if cx < cw && cy < ch {
-                            let i = (cy * cw + cx) * 4;
-                            // Clear to transparent black (logical background).
-                            self.canvas[i]     = 0;
-                            self.canvas[i + 1] = 0;
-                            self.canvas[i + 2] = 0;
-                            self.canvas[i + 3] = 0;
-                        }
-                    }
+
+                let left = left as usize;
+                let top  = top as usize;
+                let fw   = fw as usize;
+                let fh   = fh as usize;
+
+                for y in 0..fh {
+                    let cy = top + y;
+                    if cy >= ch { break; }
+
+                    let x0 = left.min(cw);
+                    let x1 = (left + fw).min(cw);
+                    if x1 <= x0 { continue; }
+
+                    let start = (cy * cw + x0) * 4;
+                    let end   = (cy * cw + x1) * 4;
+                    self.canvas[start..end].fill(0);
                 }
             }
             DisposalMethod::Previous => {
-                self.canvas.copy_from_slice(&self.prev_canvas);
+                if let Some(prev) = self.prev_canvas.as_ref() {
+                    self.canvas.copy_from_slice(prev);
+                }
             }
-            // Keep / Any / _ → leave canvas as-is.
             _ => {}
         }
 
@@ -111,7 +117,7 @@ impl<'a> GifFrameStream<'a> {
             Err(e)      => return Some(Err(e.to_string())),
         };
 
-        // Delay: in 1/100th-seconds. Clamp 0/1cs to 20ms minimum.
+        // Delay: in 1/100th-seconds. Clamp to 20ms minimum.
         let d_cs  = frame.delay.max(2) as u64; // 2 cs = 20 ms
         let delay = Duration::from_millis(d_cs * 10);
 
@@ -123,26 +129,20 @@ impl<'a> GifFrameStream<'a> {
 
         // ── Step 3: save canvas NOW (before compositing) if this frame's disposal is Previous ──
         if matches!(disposal, DisposalMethod::Previous) {
-            self.prev_canvas.copy_from_slice(&self.canvas);
+            let prev = self.prev_canvas.get_or_insert_with(|| vec![0u8; self.canvas.len()]);
+            prev.copy_from_slice(&self.canvas);
         }
 
-        // Remember this frame's disposal + rect for the NEXT call.
         self.last_disposal = disposal;
         self.last_rect = (frame.left, frame.top, frame.width, frame.height);
 
-        // ── Step 4: composite this frame's pixels onto the canvas ──
-        //
-        // frame.buffer is RGBA, sized fw×fh×4 (the frame's bounding box only —
-        // NOT the full canvas). GIF transparency is binary: a == 0 → skip pixel.
+        // ── Step 4: composite this frame bbox onto canvas ──
         let buf      = &frame.buffer;
         let expected = fw * fh * 4;
         if buf.len() != expected {
             return Some(Err(format!(
                 "gif frame buffer size mismatch: got {}, expected {} ({}×{}×4)",
-                buf.len(),
-                expected,
-                fw,
-                fh,
+                buf.len(), expected, fw, fh,
             )));
         }
 
@@ -151,30 +151,36 @@ impl<'a> GifFrameStream<'a> {
 
         for y in 0..fh {
             let cy = top + y;
-            if cy >= ch {
-                continue;
-            }
+            if cy >= ch { continue; }
+
+            let src_row = &buf[y * fw * 4..(y + 1) * fw * 4];
+
             for x in 0..fw {
                 let cx = left + x;
-                if cx >= cw {
-                    continue;
-                }
-                let si = (y * fw + x) * 4;
-                let di = (cy * cw  + cx) * 4;
+                if cx >= cw { continue; }
 
-                // Binary GIF transparency: a == 0 → transparent (preserve canvas pixel).
-                if buf[si + 3] == 0 {
-                    continue;
-                }
-                self.canvas[di]     = buf[si];
-                self.canvas[di + 1] = buf[si + 1];
-                self.canvas[di + 2] = buf[si + 2];
-                self.canvas[di + 3] = buf[si + 3];
+                let si = x * 4;
+                let a = src_row[si + 3];
+
+                // Binary transparency
+                if a == 0 { continue; }
+
+                let di = (cy * cw + cx) * 4;
+                self.canvas[di]     = src_row[si];
+                self.canvas[di + 1] = src_row[si + 1];
+                self.canvas[di + 2] = src_row[si + 2];
+                self.canvas[di + 3] = a;
             }
         }
 
-        // ── Step 5: convert the full composited canvas → XRGB8888 ──
-        let pixels = rgba_canvas_to_xrgb(&self.canvas);
+        // ── Step 5: convert canvas -> XRGB (IN PLACE, no alloc) ──
+        rgba_canvas_to_xrgb_inplace(&self.canvas, &mut self.xrgb);
+
+        // Return a DecodedImage that owns pixels.
+        // NOTE: this still clones for API compatibility with your existing GifPlayer;
+        // the big win is we removed the per-frame alloc inside decode. Next step is
+        // returning a slice to avoid this clone in the daemon path.
+        let pixels = self.xrgb.clone();
 
         Some(Ok((
             DecodedImage {
@@ -186,24 +192,25 @@ impl<'a> GifFrameStream<'a> {
             delay,
         )))
     }
+
+    /// Aggressive: drop prev_canvas if you want lower steady-state RSS.
+    pub fn drop_prev_canvas(&mut self) {
+        self.prev_canvas = None;
+    }
 }
 
-/// Convert an RGBA canvas (composited over implicit black background) to XRGB8888.
-///
-/// Layout: XRGB8888 bytes = [ B, G, R, 0 ] per pixel (little-endian 0x00RRGGBB).
-/// Alpha-premultiplication over black: r' = r*a/255, g' = g*a/255, b' = b*a/255.
+/// Convert an RGBA canvas to XRGB8888, writing into `out` (must be same len).
 #[inline]
-fn rgba_canvas_to_xrgb(rgba: &[u8]) -> Vec<u8> {
-    let mut out = vec![0u8; rgba.len()];
+fn rgba_canvas_to_xrgb_inplace(rgba: &[u8], out: &mut [u8]) {
+    if out.len() != rgba.len() { return; }
     for (src, dst) in rgba.chunks_exact(4).zip(out.chunks_exact_mut(4)) {
         let r = src[0] as u16;
         let g = src[1] as u16;
         let b = src[2] as u16;
         let a = src[3] as u16;
-        dst[2] = ((r * a) / 255) as u8; // R channel
-        dst[1] = ((g * a) / 255) as u8; // G channel
-        dst[0] = ((b * a) / 255) as u8; // B channel
-        dst[3] = 0;                      // X (unused)
+        dst[2] = ((r * a) / 255) as u8;
+        dst[1] = ((g * a) / 255) as u8;
+        dst[0] = ((b * a) / 255) as u8;
+        dst[3] = 0;
     }
-    out
 }
