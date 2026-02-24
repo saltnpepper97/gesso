@@ -22,7 +22,6 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_surface_v1,
 };
 
-// NEW: xdg-output v1 (gives DP-1 / HDMI-A-1 names)
 use wayland_protocols::xdg::xdg_output::zv1::client::{
     zxdg_output_manager_v1,
     zxdg_output_v1,

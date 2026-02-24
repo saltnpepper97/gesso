@@ -259,6 +259,15 @@ impl RenderEngine {
         }
     }
 
+    /// True if this output is currently mid-transition.
+    /// (Useful for gating GIF playback until transition into frame 0 finishes.)
+    pub fn is_transitioning(&self, output: &str) -> bool {
+        self.outputs
+            .get(output)
+            .map(|st| st.active.is_some())
+            .unwrap_or(false)
+    }
+
     /// Set immediately (no transition). Pixels are kept only until the next render.
     pub fn set_now(&mut self, output: &str, target: Target) -> Result<()> {
         let st = self.outputs.get_mut(output).ok_or(EngineError::UnknownOutput)?;

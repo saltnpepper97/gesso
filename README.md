@@ -1,5 +1,6 @@
-> [!NOTE]  
-> gessod on idle after setting wallpaper with same for both monitors with a 2k and a 1k monitor for me sits at <10mb or rss pss ram usage
+> [!NOTE]
+> On my setup (one 2560×1440 + one 1920×1080 output), `gessod` typically idles under ~10 MiB RSS after setting wallpapers on both outputs.
+> Your mileage may vary by compositor, output count, and image sizes.
 
 # gesso
 
@@ -22,6 +23,17 @@ Wayland-only. Requires a compositor that supports **layer-shell** (most wlroots-
   - `wave` supports **direction** (`--from left|right`)
 - Deterministic pacing (no “runaway” frame scheduling)
 - SHM rendering, buffer release when idle, and low persistent memory use
+
+---
+
+## Supported image formats
+
+| Format | Support | Notes |
+|---|---:|---|
+| PNG | ✅ | Static images |
+| JPEG | ✅ | Static images |
+| WebP | ✅ | **Static only** (animated WebP not supported) |
+| GIF | ✅ | **Animated GIFs play** (looping per GIF loop extension). Frames are pre-scaled per output when set. |
 
 ---
 

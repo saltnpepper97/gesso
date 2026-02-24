@@ -1,15 +1,18 @@
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use eventline::scope;
 
 use gesso_core::{
-    decode_image, scale_image, Colour, RenderEngine, ScaleMode, Target,
+    decode::{decode, Decoded},
+    scale_image, Colour, RenderEngine, ScaleMode, Target,
     Transition as CoreTransition,
 };
 use gesso_core::render::OldSnapshot;
 use gesso_ipc::protocol as ipc;
 use gesso_wl::WlBackend;
 
+use crate::daemon::gif_player::GifPlayer;
 use crate::daemon::persist::{resolve_image_path, save_state};
 use crate::daemon::snapshot::snapshot_pixels_for_output;
 use crate::daemon::transitions::{
@@ -24,6 +27,7 @@ pub fn handle_request(
     active: &mut HashSet<String>,
     current: &mut HashMap<String, ipc::CurrentTarget>,
     last_set: &mut HashMap<String, PersistedSet>,
+    gifs: &mut HashMap<String, GifPlayer>,
     req: ipc::Request,
     quitting: &mut bool,
 ) -> ipc::Response {
@@ -71,9 +75,9 @@ pub fn handle_request(
             ipc::Request::Doctor => {
                 let health = wl.health();
                 let mut warnings = Vec::new();
-                if !health.has_compositor { warnings.push("wl_compositor not found".to_string()); }
-                if !health.has_shm       { warnings.push("wl_shm not found".to_string()); }
-                if !health.has_layer_shell { warnings.push("zwlr_layer_shell_v1 not found".to_string()); }
+                if !health.has_compositor    { warnings.push("wl_compositor not found".to_string()); }
+                if !health.has_shm           { warnings.push("wl_shm not found".to_string()); }
+                if !health.has_layer_shell   { warnings.push("zwlr_layer_shell_v1 not found".to_string()); }
                 if !health.has_xdg_output_manager {
                     warnings.push("zxdg_output_manager_v1 not found (output names may be unavailable)".to_string());
                 }
@@ -109,39 +113,33 @@ pub fn handle_request(
                 }
 
                 for name in selected {
-                    // 1) Commit a black frame so "unset" actually changes what you see.
-                    //    This avoids the compositor just keeping the last committed buffer forever.
+                    gifs.remove(&name);
+
                     if let Some(outinfo) = outputs.iter().find(|o| o.name == name) {
-                        // Best-effort: try a few times in case we need configure/frame-ready.
                         for _ in 0..8 {
                             match wl.present_rendered(&name, outinfo.width, outinfo.height, |dst| {
-                                dst.fill(0); // XRGB8888 black
+                                dst.fill(0);
                                 Ok(())
                             }) {
-                                Ok(true) => break,
-                                Ok(false) => {
-                                    // compositor not ready; wait for events then retry
-                                    let _ = wl.blocking_dispatch();
-                                }
-                                Err(_e) => break,
+                                Ok(true)  => break,
+                                Ok(false) => { let _ = wl.blocking_dispatch(); }
+                                Err(_e)   => break,
                             }
                         }
                     }
 
-                    // 2) Now tear down / stop tracking.
                     active.remove(&name);
                     current.insert(name.clone(), ipc::CurrentTarget::Unset);
                     last_set.insert(
                         name.clone(),
                         PersistedSet {
-                            target: PersistedTarget::Unset,
-                            mode: None,
-                            bg_colour: None,
+                            target:     PersistedTarget::Unset,
+                            mode:       None,
+                            bg_colour:  None,
                             transition: PersistedTransition::None,
                         },
                     );
 
-                    // Destroy the layer surface/buffers on this output.
                     let _ = wl.unset(&name);
                 }
 
@@ -158,8 +156,8 @@ pub fn handle_request(
                     return ipc::Response::Error { message: "no outputs selected".into() };
                 }
 
-                let tr_ipc = set.transition.clone();
-                let tr_core = to_core_transition(tr_ipc.clone());
+                let tr_ipc     = set.transition.clone();
+                let tr_core    = to_core_transition(tr_ipc.clone());
                 let tr_persist = persisted_transition_from_ipc(tr_ipc);
 
                 match set.target {
@@ -168,6 +166,7 @@ pub fn handle_request(
 
                         for name in selected {
                             let Some(outinfo) = outputs.iter().find(|o| o.name == name) else { continue };
+                            gifs.remove(&name);
 
                             if matches!(tr_core, CoreTransition::None) {
                                 let _ = eng.set_now(&name, Target::Colour(col));
@@ -183,13 +182,12 @@ pub fn handle_request(
 
                             active.insert(name.clone());
                             current.insert(name.clone(), ipc::CurrentTarget::Colour(rgb));
-
                             last_set.insert(
                                 name.clone(),
                                 PersistedSet {
-                                    target: PersistedTarget::Colour { r: rgb.r, g: rgb.g, b: rgb.b },
-                                    mode: None,
-                                    bg_colour: None,
+                                    target:     PersistedTarget::Colour { r: rgb.r, g: rgb.g, b: rgb.b },
+                                    mode:       None,
+                                    bg_colour:  None,
                                     transition: tr_persist.clone(),
                                 },
                             );
@@ -204,55 +202,122 @@ pub fn handle_request(
                             return ipc::Response::Error { message: format!("image not found: {path}") };
                         };
 
-                        let decoded = match decode_image(&resolved) {
-                            Ok(d) => d,
-                            Err(e) => return ipc::Response::Error { message: format!("decode failed: {e}") },
-                        };
-
                         let canonical = resolved.to_string_lossy().into_owned();
 
+                        // Decode once per output so AnimDecoded is always owned (no Clone needed).
+                        // In practice selected is almost always a single output; the re-decode
+                        // cost for multi-monitor is negligible compared to the I/O already done.
                         for name in selected {
                             let Some(outinfo) = outputs.iter().find(|o| o.name == name) else { continue };
 
-                            let bg = set.bg_colour.unwrap_or(ipc::Rgb { r: 0, g: 0, b: 0 });
-                            let pixels = scale_image(
-                                &decoded,
-                                outinfo.width,
-                                outinfo.height,
-                                to_scale_mode(set.mode),
-                                Colour { r: bg.r, g: bg.g, b: bg.b },
-                            );
-                            let target = Target::image(
-                                outinfo.width,
-                                outinfo.height,
-                                outinfo.width as usize * 4,
-                                pixels,
-                            );
-
-                            if matches!(tr_core, CoreTransition::None) {
-                                let _ = eng.set_now(&name, target);
-                            } else {
-                                let from = snapshot_pixels_for_output(outinfo, last_set.get(&name));
-                                let _ = eng.set_with_transition_from(
-                                    &name,
-                                    OldSnapshot::Image(from),
-                                    target,
-                                    tr_core.clone(),
-                                );
-                            }
-
-                            active.insert(name.clone());
-                            current.insert(name.clone(), ipc::CurrentTarget::ImagePath(canonical.clone()));
-
-                            last_set.insert(
-                                name.clone(),
-                                PersistedSet {
-                                    target: PersistedTarget::ImagePath { path: canonical.clone() },
-                                    mode: Some(set.mode),
-                                    bg_colour: set.bg_colour,
-                                    transition: tr_persist.clone(),
+                            let decoded = match decode(&resolved) {
+                                Ok(d)  => d,
+                                Err(e) => return ipc::Response::Error {
+                                    message: format!("decode failed: {e}"),
                                 },
-                            );
+                            };
+
+                            let bg     = set.bg_colour.unwrap_or(ipc::Rgb { r: 0, g: 0, b: 0 });
+                            let bg_col = Colour { r: bg.r, g: bg.g, b: bg.b };
+                            let scale  = to_scale_mode(set.mode);
+
+                            match decoded {
+                                Decoded::Still(img) => {
+                                    gifs.remove(&name);
+
+                                    let pixels = scale_image(&img, outinfo.width, outinfo.height, scale, bg_col);
+                                    let target = Target::image(
+                                        outinfo.width,
+                                        outinfo.height,
+                                        outinfo.width as usize * 4,
+                                        pixels,
+                                    );
+
+                                    if matches!(tr_core, CoreTransition::None) {
+                                        let _ = eng.set_now(&name, target);
+                                    } else {
+                                        let from = snapshot_pixels_for_output(outinfo, last_set.get(&name));
+                                        let _ = eng.set_with_transition_from(
+                                            &name,
+                                            OldSnapshot::Image(from),
+                                            target,
+                                            tr_core.clone(),
+                                        );
+                                    }
+
+                                    active.insert(name.clone());
+                                    current.insert(name.clone(), ipc::CurrentTarget::ImagePath(canonical.clone()));
+                                    last_set.insert(
+                                        name.clone(),
+                                        PersistedSet {
+                                            target:     PersistedTarget::ImagePath { path: canonical.clone() },
+                                            mode:       Some(set.mode),
+                                            bg_colour:  set.bg_colour,
+                                            transition: tr_persist.clone(),
+                                        },
+                                    );
+                                }
+
+                                Decoded::Animated(anim) => {
+                                    gifs.remove(&name);
+
+                                    // Show first frame immediately, with transition if requested.
+                                    let pixels = scale_image(
+                                        &anim.first_frame,
+                                        outinfo.width,
+                                        outinfo.height,
+                                        scale,
+                                        bg_col,
+                                    );
+                                    let target0 = Target::image(
+                                        outinfo.width,
+                                        outinfo.height,
+                                        outinfo.width as usize * 4,
+                                        pixels,
+                                    );
+
+                                    if matches!(tr_core, CoreTransition::None) {
+                                        let _ = eng.set_now(&name, target0);
+                                    } else {
+                                        let from = snapshot_pixels_for_output(outinfo, last_set.get(&name));
+                                        let _ = eng.set_with_transition_from(
+                                            &name,
+                                            OldSnapshot::Image(from),
+                                            target0,
+                                            tr_core.clone(),
+                                        );
+                                    }
+
+                                    let loop_count = anim.loop_count;
+                                    let now = Instant::now();
+                                    match GifPlayer::new(
+                                        anim, // moved, no clone needed
+                                        outinfo.width,
+                                        outinfo.height,
+                                        scale,
+                                        bg_col,
+                                        loop_count,
+                                        now,
+                                    ) {
+                                        Ok(player) => { gifs.insert(name.clone(), player); }
+                                        Err(e) => return ipc::Response::Error {
+                                            message: format!("animation player init failed: {e}"),
+                                        },
+                                    }
+
+                                    active.insert(name.clone());
+                                    current.insert(name.clone(), ipc::CurrentTarget::ImagePath(canonical.clone()));
+                                    last_set.insert(
+                                        name.clone(),
+                                        PersistedSet {
+                                            target:     PersistedTarget::ImagePath { path: canonical.clone() },
+                                            mode:       Some(set.mode),
+                                            bg_colour:  set.bg_colour,
+                                            transition: tr_persist.clone(),
+                                        },
+                                    );
+                                }
+                            }
                         }
 
                         let _ = save_state(last_set);
@@ -262,12 +327,7 @@ pub fn handle_request(
                     ipc::SetTarget::Unset => {
                         let sel = ipc::OutputSel::Named(selected);
                         handle_request(
-                            eng,
-                            wl,
-                            outputs,
-                            active,
-                            current,
-                            last_set,
+                            eng, wl, outputs, active, current, last_set, gifs,
                             ipc::Request::Unset { outputs: sel },
                             quitting,
                         )
@@ -280,17 +340,14 @@ pub fn handle_request(
 
 pub fn to_scale_mode(m: ipc::Mode) -> ScaleMode {
     match m {
-        ipc::Mode::Fill => ScaleMode::Fill,
-        ipc::Mode::Fit => ScaleMode::Fit,
+        ipc::Mode::Fill    => ScaleMode::Fill,
+        ipc::Mode::Fit     => ScaleMode::Fit,
         ipc::Mode::Stretch => ScaleMode::Stretch,
-        ipc::Mode::Center => ScaleMode::Center,
-        ipc::Mode::Tile => ScaleMode::Tile,
+        ipc::Mode::Center  => ScaleMode::Center,
+        ipc::Mode::Tile    => ScaleMode::Tile,
     }
 }
 
-/// Strict selection:
-/// - All => all outputs
-/// - Named => error if any name is unknown (no silent "none" / "all" fallbacks)
 pub fn select_outputs(
     outputs: &[gesso_wl::OutputInfo],
     sel: &ipc::OutputSel,
@@ -301,7 +358,6 @@ pub fn select_outputs(
             if names.is_empty() {
                 return Err("no outputs selected".into());
             }
-
             let mut picked = Vec::with_capacity(names.len());
             for want in names {
                 if outputs.iter().any(|o| o.name == *want) {
