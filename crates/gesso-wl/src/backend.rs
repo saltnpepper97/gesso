@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 use crate::error::{WlError, WlResult};
 use crate::health::HealthReport;
 use crate::outputs::{Outputs, OutputInfo};

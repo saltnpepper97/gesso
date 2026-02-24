@@ -1,3 +1,7 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
+
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 

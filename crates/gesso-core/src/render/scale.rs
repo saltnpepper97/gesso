@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 use crate::{Colour, DecodedImage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

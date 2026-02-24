@@ -1,10 +1,12 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 pub mod decode;
 pub mod mem;
 pub mod model;
 pub mod render;
 pub mod hex;
 pub mod paths;
-pub mod utils;
 
 pub use decode::{DecodedImage, decode_image, DecodeError};
 pub use model::{

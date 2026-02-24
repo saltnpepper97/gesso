@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 use thiserror::Error;
 
 pub type WlResult<T> = Result<T, WlError>;

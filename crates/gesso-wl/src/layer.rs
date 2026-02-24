@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 use crate::WlResult;
 use crate::state::WlState;
 

@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 #[derive(Debug, Clone, Copy)]
 pub struct Surface<'a> {
     pub width: u32,

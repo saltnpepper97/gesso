@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 pub mod surface;
 pub mod transition;
 pub mod engine;

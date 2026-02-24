@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 use std::time::Duration;
 
 use crate::decode::{AnimFrame, DecodedImage};

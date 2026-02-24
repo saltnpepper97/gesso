@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 use gesso_ipc::protocol as ipc;
 
 use crate::cli::ModeArg;

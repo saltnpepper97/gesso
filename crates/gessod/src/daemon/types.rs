@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 //
 // Persisted State
 //

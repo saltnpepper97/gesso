@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 use serde::{Deserialize, Serialize};
 use crate::hex;
 

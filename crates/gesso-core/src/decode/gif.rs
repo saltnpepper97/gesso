@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 use std::io::Cursor;
 use std::time::Duration;
 

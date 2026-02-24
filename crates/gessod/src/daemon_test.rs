@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 #![cfg(test)]
 
 use std::time::{Duration, Instant};

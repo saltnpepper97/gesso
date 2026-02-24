@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 use gesso_core::{Transition as CoreTransition, WaveDir as CoreWaveDir};
 use gesso_ipc::protocol as ipc;
 

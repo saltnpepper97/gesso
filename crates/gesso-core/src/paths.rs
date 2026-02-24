@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 use std::path::PathBuf;
 
 pub fn gesso_dirs_from_env() -> Vec<PathBuf> {

@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;

@@ -1,4 +1,5 @@
-// crates/gesso-core/src/render/transition.rs
+// Author: Dustin Pilgrim
+// License: MIT
 
 use serde::{Deserialize, Serialize};
 

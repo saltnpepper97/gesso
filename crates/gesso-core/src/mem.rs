@@ -1,18 +1,6 @@
-/// Memory pressure helpers for large pixel buffers.
-///
-/// All functions are best-effort: on non-Linux or unsupported arches they compile
-/// to no-ops so the rest of the codebase doesn't need cfg guards.
+// Author: Dustin Pilgrim
+// License: MIT
 
-// ── mmap / MADV hints ────────────────────────────────────────────────────────
-
-/// Tell the kernel it can immediately reclaim the physical pages backing `buf`.
-///
-/// Uses `MADV_DONTNEED` so pages are zeroed on next access.  Call this on large
-/// buffers (canvas, pixel frames) **before** dropping them so jemalloc returns
-/// physical pages to the OS promptly instead of sitting in its dirty/muzzy cache.
-///
-/// This is the key call when tearing down a GIF player: without it jemalloc may
-/// hold ~16 MB of dirty pages for up to `dirty_decay_ms` milliseconds.
 #[inline]
 pub fn pages_dontneed(buf: &[u8]) {
     #[cfg(target_os = "linux")]

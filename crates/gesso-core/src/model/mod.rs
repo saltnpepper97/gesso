@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 pub mod colour;
 pub mod output;
 pub mod request;

@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 use crate::{WlError, WlResult};
 use memmap2::MmapMut;
 use std::fs::File;

@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 pub mod gif_player;
 pub mod ipc;
 pub mod instance_lock;

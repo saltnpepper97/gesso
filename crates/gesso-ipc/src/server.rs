@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 use std::fs;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;

@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 pub fn nybble(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),

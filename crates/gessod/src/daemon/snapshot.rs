@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 use std::sync::Arc;
 
 use gesso_core::{decode_image, scale_image, Colour, ScaleMode};

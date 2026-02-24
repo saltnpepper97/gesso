@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 use super::DecodedImage;
 
 pub fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {

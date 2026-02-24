@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 use clap::Parser;
 use gesso_ipc::{default_socket_path, request};
 use gesso_ipc::protocol as ipc;

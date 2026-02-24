@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 pub mod protocol;
 mod frame;
 mod client;

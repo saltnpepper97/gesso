@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 use crate::error::{WlError, WlResult};
 use crate::layer::{create_wallpaper_layer_surface, LayerSurface};
 use crate::outputs::OutputInfo;

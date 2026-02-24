@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 use crate::state::WlState;
 
 #[derive(Debug, Clone)]

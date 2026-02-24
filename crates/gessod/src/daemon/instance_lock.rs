@@ -1,3 +1,6 @@
+// Author: Dustin Pilgrim
+// License: MIT
+
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
