@@ -12,6 +12,14 @@ Wayland-only. Requires a compositor that supports **layer-shell** (most wlroots-
 
 ---
 
+## Demo
+
+<video src="assets/demo.mp4" controls width="100%">
+  Your browser does not support the video tag.
+</video>
+
+---
+
 ## Highlights
 
 - **Per-output control** (by compositor output name like `DP-1`, `HDMI-A-1`)
