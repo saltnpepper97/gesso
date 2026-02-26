@@ -21,35 +21,56 @@ use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
+// Rayon thread count: cap at 4 so we get parallelism without bloating RSS.
+// Each thread gets a 2 MB stack (vs the 8 MB default = 32 MB savings on a
+// 4-core cap, 64 MB+ on larger machines).
+const RAYON_THREADS: usize = 4;
+
 /// Apply jemalloc tuning BEFORE any significant allocation.
 ///
 /// Key options:
-/// - `narenas:1`              — single arena; less per-arena overhead, better
-///                              locality for a single-threaded render loop
-/// - `background_thread:true` — dedicated purge thread (requires the
-///                              `background_thread` cargo feature on tikv-jemallocator)
-/// - `dirty_decay_ms:500`     — return dirty pages to OS within 500 ms of becoming free
-/// - `muzzy_decay_ms:0`       — MADV_FREE muzzy pages immediately (lazy-free, zero cost
-///                              if they are reused before the kernel reclaims them)
-/// - `retain:false`           — actually `munmap` freed extents instead of holding
-///                              virtual address space; reduces RSS for one-off large allocs
+/// - `narenas:N`              — one arena per active thread avoids contention
+///                              without the unbounded growth of the default
+///                              (which is 4× logical CPUs).  We use
+///                              RAYON_THREADS + 2 (render + IPC threads).
+/// - `background_thread:true` — dedicated purge thread
+/// - `dirty_decay_ms:200`     — return dirty pages to OS within 200 ms;
+///                              tighter than 500 ms to keep idle RSS low
+/// - `muzzy_decay_ms:0`       — MADV_FREE muzzy pages immediately
+/// - `retain:false`           — actually munmap freed extents; reduces RSS
+///                              for one-off large allocs (e.g. image buffers)
 ///
-/// All values can be overridden at runtime by setting `MALLOC_CONF` in the environment
-/// before launching gessod.
+/// Override at runtime with MALLOC_CONF in the environment.
 #[inline(always)]
 fn configure_jemalloc() {
     if std::env::var_os("MALLOC_CONF").is_none() {
-        // SAFETY: must be called before any threads are spawned and before any
-        // jemalloc allocations; we are the very first thing in main().
-        unsafe {
-            std::env::set_var(
-                "MALLOC_CONF",
-                "narenas:1,background_thread:true,\
-                 dirty_decay_ms:500,muzzy_decay_ms:0,\
-                 retain:false",
-            );
-        }
+        // narenas = rayon workers + main thread + IPC thread
+        let narenas = RAYON_THREADS + 2;
+        let conf = format!(
+            "narenas:{narenas},background_thread:true,\
+             dirty_decay_ms:200,muzzy_decay_ms:0,\
+             retain:false"
+        );
+        // SAFETY: must be called before any threads are spawned and before
+        // any jemalloc allocations; we are the very first thing in main().
+        unsafe { std::env::set_var("MALLOC_CONF", conf); }
     }
+}
+
+/// Initialise the rayon global thread pool with a bounded thread count and
+/// a small per-thread stack.
+///
+/// Default rayon behaviour: num_cpus threads × 8 MB stack = up to 64 MB RSS
+/// just in stacks on an 8-core machine, all of it faulted in immediately.
+/// 4 threads × 2 MB = 8 MB worst-case, and scaling a 4K image to 1080p is
+/// already memory-bandwidth-bound well before 4 threads.
+fn configure_rayon() {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(RAYON_THREADS)
+        .stack_size(2 * 1024 * 1024) // 2 MB per thread
+        .thread_name(|i| format!("gesso-scale-{i}"))
+        .build_global()
+        .expect("failed to build rayon thread pool");
 }
 
 /// Compute the log file path:
@@ -119,9 +140,12 @@ fn main() -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     disable_thp_for_process();
 
+    // ── 3. Rayon thread pool — bounded size + small stacks ──
+    configure_rayon();
+
     let args = Args::parse();
 
-    // ── 3. Logging ──
+    // ── 4. Logging ──
     let log_path = log_file_path()?;
     if let Some(parent) = log_path.parent() {
         std::fs::create_dir_all(parent)
@@ -129,7 +153,7 @@ fn main() -> anyhow::Result<()> {
     }
     logging::init(args.verbose, &log_path)?;
 
-    // ── 4. Socket setup ──
+    // ── 5. Socket setup ──
     let sock = match args.socket {
         Some(p) => p,
         None    => default_socket_path()?,
@@ -145,11 +169,11 @@ fn main() -> anyhow::Result<()> {
     let _instance_lock = daemon::instance_lock::InstanceLock::acquire_for_socket(&sock)
         .map_err(|e| anyhow::anyhow!("gessod: {e}"))?;
 
-    // ── 5. IPC channels ──
+    // ── 6. IPC channels ──
     let (req_tx, req_rx)   = mpsc::channel::<ipc::Request>();
     let (resp_tx, resp_rx) = mpsc::channel::<ipc::Response>();
 
-    // ── 6. IPC server thread ──
+    // ── 7. IPC server thread ──
     // 512 KB stack is ample for simple serialisation/deserialisation work.
     // The default 8 MB wastes ~7.5 MB of RSS unnecessarily.
     let listener = bind(&sock)?;
@@ -172,6 +196,6 @@ fn main() -> anyhow::Result<()> {
         })
         .map_err(|e| anyhow::anyhow!("gessod: spawn ipc thread: {e}"))?;
 
-    // ── 7. Render loop (main thread) ──
+    // ── 8. Render loop (main thread) ──
     daemon::run(req_rx, resp_tx)
 }

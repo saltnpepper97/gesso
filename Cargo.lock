@@ -443,6 +443,7 @@ dependencies = [
  "gesso-core",
  "gesso-ipc",
  "gesso-wl",
+ "rayon",
  "serde",
  "serde_json",
  "tikv-jemallocator",
