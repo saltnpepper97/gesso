@@ -14,9 +14,11 @@ Wayland-only. Requires a compositor that supports **layer-shell** (most wlroots-
 
 ## Demo
 
-<video src="assets/demo.mp4" controls width="100%">
-  Your browser does not support the video tag.
-</video>
+
+
+https://github.com/user-attachments/assets/d0a6dbaa-b080-40c8-8316-8ac2a1f7d73e
+
+
 
 ---
 
