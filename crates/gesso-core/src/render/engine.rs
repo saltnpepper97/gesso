@@ -62,7 +62,7 @@ impl Target {
 }
 
 //
-// “From” snapshot (NO forced pixel allocation)
+// "From" snapshot (NO forced pixel allocation)
 //
 
 #[derive(Debug, Clone)]
@@ -84,7 +84,7 @@ impl OldSnapshot {
 }
 
 //
-// “Current” state (debug-only; NO pixel ownership)
+// "Current" state (debug-only; NO pixel ownership)
 //
 
 #[cfg(debug_assertions)]
@@ -114,27 +114,33 @@ impl CurrentKind {
 // Per-transition easing
 //
 
-/// `1 - (1 - t)^exp`  — starts fast, ends at 0 velocity.
-/// Increasing exp makes the tail linger longer.
+/// `1 - (1 - t)^exp`  — starts fast, decelerates strongly into the end.
+/// Higher exp = more time lingering near the final state.
 #[inline(always)]
 fn ease_out(t: f32, exp: f32) -> f32 {
     1.0 - (1.0 - t.clamp(0.0, 1.0)).powf(exp)
 }
 
-/// Classic smoothstep: gentle ease-in AND ease-out.
+/// Quintic smoothstep: much more dramatic ease-in AND ease-out than cubic.
+/// `6t⁵ - 15t⁴ + 10t³`  (Perlin's "smootherStep")
 #[inline(always)]
-fn smoothstep(t: f32) -> f32 {
+fn smootherstep(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
+    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 }
 
 /// Returns an eased `t` appropriate for the given transition type.
+///
+/// Tuning notes:
+///   Drop  exp 6.0  — punchy launch, very long gentle settle (cinematic)
+///   Wave  exp 4.5  — clear deceleration into the final rest position
+///   Fade  quintic  — symmetric, noticeably slower at both ends
 #[inline(always)]
 fn ease_for_transition(transition: &Transition, t: f32) -> f32 {
     match transition {
-        Transition::Drop { .. } => ease_out(t, 4.0), // punchy, long settle
-        Transition::Wave { .. } => ease_out(t, 3.0), // natural wipe decel
-        Transition::Fade { .. } => smoothstep(t),    // symmetric cross-dissolve
+        Transition::Drop { .. } => ease_out(t, 6.0),
+        Transition::Wave { .. } => ease_out(t, 4.5),
+        Transition::Fade { .. } => smootherstep(t),
         Transition::None        => t,
     }
 }
@@ -170,7 +176,7 @@ struct OutputState {
     height:  u32,
     stride:  usize,
 
-    // Lightweight “what is currently shown” metadata (no pixels).
+    // Lightweight "what is currently shown" metadata (no pixels).
     // Debug-only so release builds stay warning-free and lean.
     #[cfg(debug_assertions)]
     current: CurrentKind,
@@ -288,7 +294,7 @@ impl RenderEngine {
         Ok(())
     }
 
-    /// Start a transition where the caller provides the “from” snapshot.
+    /// Start a transition where the caller provides the "from" snapshot.
     ///
     /// Key to low idle memory:
     /// - If old was a colour/unset, pass OldSnapshot::Colour (NO Vec alloc).
@@ -357,7 +363,7 @@ impl RenderEngine {
             let t_linear = a.progress(now);
 
             if a.is_complete(now) || t_linear >= 1.0 {
-                // Finish: blit final “to” and drop all pixel ownership immediately.
+                // Finish: blit final "to" and drop all pixel ownership immediately.
                 let finished = st.active.take().unwrap();
 
                 blit_target_fast(&finished.to, st.width, st.height, st.stride, dst);
@@ -396,7 +402,7 @@ impl RenderEngine {
             return true;
         }
 
-        // One-shot “present once” for set_now(). After this call, drop pixels.
+        // One-shot "present once" for set_now(). After this call, drop pixels.
         if let Some(pending) = st.pending.take() {
             blit_target_fast(&pending, st.width, st.height, st.stride, dst);
 

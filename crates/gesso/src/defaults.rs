@@ -2,26 +2,23 @@
 // License: MIT
 
 use gesso_ipc::protocol as ipc;
-
 use crate::cli::{TransitionArg, WaveFromArg};
 
 // ---- sane defaults ----
-
-const IMG_DROP_MS: u32 = 2050;
-const IMG_FADE_MS: u32 = 850;
-const IMG_WAVE_MS: u32 = 1550;
-
-const COL_DROP_MS: u32 = 1550;
-const COL_FADE_MS: u32 = 1000;
-const COL_WAVE_MS: u32 = 1550;
+const IMG_DROP_MS: u32 = 2300;
+const IMG_FADE_MS: u32 = 950;
+const IMG_WAVE_MS: u32 = 1750;
+const COL_DROP_MS: u32 = 1700;
+const COL_FADE_MS: u32 = 1100;
+const COL_WAVE_MS: u32 = 1700;
 
 fn mode_nudge_ms(mode: ipc::Mode) -> i32 {
     match mode {
-        ipc::Mode::Fill => 0,
-        ipc::Mode::Fit => -60,
-        ipc::Mode::Center => -60,
-        ipc::Mode::Stretch => -40,
-        ipc::Mode::Tile => -120,
+        ipc::Mode::Fill    =>    0,
+        ipc::Mode::Fit     =>  -60,
+        ipc::Mode::Center  =>  -60,
+        ipc::Mode::Stretch =>  -40,
+        ipc::Mode::Tile    => -120,
     }
 }
 
@@ -39,17 +36,17 @@ fn norm_steps(s: Option<u16>) -> Option<u16> {
 
 fn wave_dir(from: WaveFromArg) -> ipc::WaveDir {
     match from {
-        WaveFromArg::Left => ipc::WaveDir::Left,
+        WaveFromArg::Left  => ipc::WaveDir::Left,
         WaveFromArg::Right => ipc::WaveDir::Right,
     }
 }
 
 pub fn build_transition_image(
-    t: TransitionArg,
+    t:        TransitionArg,
     duration: Option<u32>,
-    from: WaveFromArg,
-    steps: Option<u16>,
-    mode: ipc::Mode,
+    from:     WaveFromArg,
+    steps:    Option<u16>,
+    mode:     ipc::Mode,
 ) -> ipc::Transition {
     let nudge = mode_nudge_ms(mode);
     let steps = norm_steps(steps);
@@ -72,10 +69,10 @@ pub fn build_transition_image(
 }
 
 pub fn build_transition_colour(
-    t: TransitionArg,
+    t:        TransitionArg,
     duration: Option<u32>,
-    from: WaveFromArg,
-    steps: Option<u16>,
+    from:     WaveFromArg,
+    steps:    Option<u16>,
 ) -> ipc::Transition {
     let steps = norm_steps(steps);
     match t {

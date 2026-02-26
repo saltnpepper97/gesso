@@ -387,7 +387,7 @@ dependencies = [
 
 [[package]]
 name = "gesso"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -396,11 +396,12 @@ dependencies = [
 
 [[package]]
 name = "gesso-core"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "gif",
  "jpeg-decoder",
  "png",
+ "rayon",
  "rustix",
  "serde",
  "thiserror",
@@ -409,7 +410,7 @@ dependencies = [
 
 [[package]]
 name = "gesso-ipc"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "libc",
  "postcard",
@@ -419,7 +420,7 @@ dependencies = [
 
 [[package]]
 name = "gesso-wl"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "eventline",
  "memmap2",
@@ -433,7 +434,7 @@ dependencies = [
 
 [[package]]
 name = "gessod"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
